@@ -4,11 +4,13 @@
  * وطلبات تجريبية تغطي كل الحالات بما فيها طلب مُصعّد لوكيل التدريب.
  *
  * التشغيل: npm run db:seed
+ *
+ * يستخدم نفس عميل Prisma المشترك، فيكتب تلقائيًا في Turso
+ * عند وجود TURSO_DATABASE_URL، أو في ملف SQLite المحلي عدا ذلك.
  */
-import { PrismaClient, type RequestStatus, type SenderRole } from "@prisma/client";
+import type { RequestStatus, SenderRole } from "@prisma/client";
 import bcrypt from "bcryptjs";
-
-const prisma = new PrismaClient();
+import { prisma } from "../src/lib/prisma";
 
 /** كلمات المرور التجريبية — موثّقة في README */
 const PASSWORDS = {
