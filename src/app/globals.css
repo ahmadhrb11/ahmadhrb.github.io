@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------
+   الأنماط العامة — واجهة عربية RTL
+   --------------------------------------------------------------- */
+
+@theme {
+  --font-sans: "Segoe UI", "Noto Sans Arabic", Tahoma, "Dubai", "Geeza Pro", Arial, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  background-color: #f6f8fb;
+  color: #0f172a;
+  min-height: 100vh;
+}
+
+/* الحفاظ على فواصل الأسطر في نصوص الطلبات والرسائل */
+.preserve-lines {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

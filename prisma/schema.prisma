@@ -1,0 +1,148 @@
+// ---------------------------------------------------------------
+//  مخطط قاعدة البيانات — نظام متابعة طلبات المتدربين
+//  SQLite محليًا / Turso (libSQL) في الإنتاج
+// ---------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// أدوار المستخدمين الذين يسجّلون الدخول (المتدرب لا يملك حسابًا)
+enum Role {
+  ADMIN // مسؤول النظام
+  DEPT_HEAD // رئيس قسم
+  DEPUTY // وكيل التدريب
+}
+
+/// نوع الطلب المقدَّم من المتدرب
+enum RequestType {
+  REQUEST // طلب
+  COMPLAINT // شكوى
+  INQUIRY // استفسار
+}
+
+/// حالات الطلب عبر دورة العمل
+enum RequestStatus {
+  PENDING_REVIEW // قيد المراجعة
+  IN_PROGRESS // قيد المعالجة (لدى رئيس القسم)
+  ESCALATED // مُصعّد لوكيل التدريب
+  COMPLETED // منتهي
+  REJECTED // مرفوض
+}
+
+/// صفة مُرسِل الرسالة داخل المحادثة
+enum SenderRole {
+  TRAINEE // المتدرب
+  ADMIN // مسؤول النظام
+  DEPT_HEAD // رئيس القسم
+  DEPUTY // وكيل التدريب
+  SYSTEM // رسائل النظام (مثل إشعار التصعيد التلقائي)
+}
+
+/// حسابات الموظفين (أدمن / رؤساء أقسام / وكيل التدريب)
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  headedSpecialties Specialty[] @relation("SpecialtyHead")
+  assignedRequests  Request[]   @relation("AssignedHead")
+  messages          Message[]
+
+  @@index([role])
+}
+
+/// التخصصات — تُدار بالكامل من لوحة الأدمن، وتربط كل تخصص برئيس قسم
+model Specialty {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true) // يُعطَّل بدل الحذف حفاظًا على الطلبات القديمة
+  headId    String? // جدول الربط: تخصص ↔ رئيس قسم
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  head     User?     @relation("SpecialtyHead", fields: [headId], references: [id], onDelete: SetNull)
+  requests Request[]
+
+  @@index([headId])
+}
+
+/// الطلب المقدَّم من المتدرب
+model Request {
+  id            String        @id @default(cuid())
+  traineeName   String
+  traineeNumber String // المفتاح الوحيد الذي يستخدمه المتدرب في /track
+  specialtyId   String
+  type          RequestType
+  body          String
+  status        RequestStatus @default(PENDING_REVIEW)
+
+  // رئيس القسم المسؤول (يُعيَّن لحظة موافقة الأدمن)
+  assignedHeadId String?
+
+  approvedAt      DateTime?
+  rejectedAt      DateTime?
+  rejectionReason String? // سبب/رد الأدمن المختصر عند الرفض
+
+  // مؤقّت التصعيد: يبدأ من لحظة الموافقة ويُحدَّث فقط عند رد رئيس القسم
+  lastHeadReplyAt DateTime?
+
+  escalatedAt      DateTime?
+  escalationReason String?
+  completedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  specialty    Specialty      @relation(fields: [specialtyId], references: [id])
+  assignedHead User?          @relation("AssignedHead", fields: [assignedHeadId], references: [id], onDelete: SetNull)
+  messages     Message[]
+  events       RequestEvent[]
+
+  @@index([traineeNumber])
+  @@index([status])
+  @@index([assignedHeadId])
+  @@index([specialtyId])
+}
+
+/// رسائل المحادثة المتبادلة على الطلب (thread)
+model Message {
+  id           String     @id @default(cuid())
+  requestId    String
+  senderRole   SenderRole
+  senderUserId String? // فارغ لرسائل المتدرب ورسائل النظام
+  senderName   String // لقطة للاسم المعروض وقت الإرسال
+  body         String
+  createdAt    DateTime   @default(now())
+
+  request    Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  senderUser User?   @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
+
+  @@index([requestId, createdAt])
+}
+
+/// سجل تغيّر حالة الطلب — يوضّح متى ولماذا حدث كل انتقال (شامل التصعيد)
+model RequestEvent {
+  id         String         @id @default(cuid())
+  requestId  String
+  fromStatus RequestStatus?
+  toStatus   RequestStatus
+  actorRole  SenderRole
+  actorName  String
+  note       String? // سبب الرفض / سبب التصعيد / ملاحظة
+  createdAt  DateTime       @default(now())
+
+  request Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, createdAt])
+}
