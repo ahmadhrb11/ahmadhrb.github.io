@@ -7,7 +7,13 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/guards";
-import { rejectSchema, submitRequestSchema, zodFieldErrors, type ActionState } from "@/lib/validation";
+import {
+  buildTraineeEmail,
+  rejectSchema,
+  submitRequestSchema,
+  zodFieldErrors,
+  type ActionState,
+} from "@/lib/validation";
 
 /** تقديم طلب جديد من صفحة /submit — متاح للجميع بدون تسجيل دخول */
 export async function submitRequestAction(
@@ -36,10 +42,14 @@ export async function submitRequestAction(
     return { ok: false, message: "التخصص المختار غير متاح", fieldErrors: { specialtyId: "اختر تخصصًا صحيحًا" } };
   }
 
+  // البريد يُبنى في الخادم حصرًا بعد نجاح التحقق — لا تصل أي قيمة له من الواجهة
+  const traineeEmail = buildTraineeEmail(data.traineeNumber);
+
   const created = await prisma.request.create({
     data: {
       traineeName: data.traineeName,
       traineeNumber: data.traineeNumber,
+      traineeEmail,
       specialtyId: data.specialtyId,
       type: data.type,
       body: data.body,

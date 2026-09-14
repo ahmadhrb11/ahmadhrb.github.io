@@ -1,7 +1,46 @@
 /** مخططات التحقق من المدخلات (Zod) — تُستخدم داخل Server Actions */
 import { z } from "zod";
 
+// ---------------------------------------------------------------
+//  الرقم التدريبي وبريد المتدرب — منطق مشترك، لا يُكرَّر في أي مكان آخر
+// ---------------------------------------------------------------
+
+/** عدد خانات الرقم التدريبي */
+export const TRAINEE_NUMBER_LENGTH = 9;
+
+/**
+ * 9 خانات رقمية بالضبط (0-9)، بلا حروف أو رموز أو مسافات.
+ * ملاحظة: \d في JavaScript تطابق الأرقام اللاتينية فقط، فالأرقام
+ * العربية-الهندية (٠١٢...) مرفوضة عمدًا لأن الرقم يُخزَّن ويُستخدم في الروابط.
+ */
+const TRAINEE_NUMBER_PATTERN = /^\d{9}$/;
+
+/** الرسالة الموحّدة التي تُعرض في كل الواجهات وفي ردود الخادم */
+export const TRAINEE_NUMBER_ERROR = "الرقم التدريبي يجب أن يتكون من 9 أرقام فقط";
+
+/** الدالة الوحيدة التي يُفحص بها الرقم التدريبي في المشروع كله */
+export function isValidTraineeNumber(value: string): boolean {
+  return TRAINEE_NUMBER_PATTERN.test(value.trim());
+}
+
+/** نطاق بريد المتدربين */
+export const TRAINEE_EMAIL_DOMAIN = "tvtc.edu.sa";
+
+/**
+ * بريد المتدرب المولّد — دالة حتمية من الرقم التدريبي.
+ * تُستدعى في الخادم فقط؛ لا تصل أي قيمة للبريد من واجهة المستخدم.
+ */
+export function buildTraineeEmail(traineeNumber: string): string {
+  return `${traineeNumber.trim()}@${TRAINEE_EMAIL_DOMAIN}`;
+}
+
 export const requestTypeEnum = z.enum(["REQUEST", "COMPLAINT", "INQUIRY"]);
+
+/** حقل الرقم التدريبي في مخططات Zod — يعيد استخدام الدالة المشتركة */
+const traineeNumberField = z
+  .string()
+  .trim()
+  .refine(isValidTraineeNumber, TRAINEE_NUMBER_ERROR);
 
 /** نموذج تقديم الطلب العام */
 export const submitRequestSchema = z.object({
@@ -10,11 +49,7 @@ export const submitRequestSchema = z.object({
     .trim()
     .min(3, "الرجاء إدخال اسم المتدرب (3 أحرف على الأقل)")
     .max(120, "الاسم طويل جدًا"),
-  traineeNumber: z
-    .string()
-    .trim()
-    .min(3, "الرجاء إدخال الرقم التدريبي")
-    .max(40, "الرقم التدريبي طويل جدًا"),
+  traineeNumber: traineeNumberField,
   specialtyId: z.string().trim().min(1, "الرجاء اختيار التخصص"),
   type: requestTypeEnum,
   body: z
@@ -46,7 +81,7 @@ export const rejectSchema = z.object({
 
 /** تتبّع الطلبات بالرقم التدريبي */
 export const trackSchema = z.object({
-  traineeNumber: z.string().trim().min(3, "الرجاء إدخال الرقم التدريبي"),
+  traineeNumber: traineeNumberField,
 });
 
 /** إضافة/تعديل تخصص */

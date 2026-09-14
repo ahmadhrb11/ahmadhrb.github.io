@@ -1,15 +1,20 @@
 import { redirect } from "next/navigation";
 import { SiteHeader } from "@/components/SiteHeader";
-import { Button, Card, Field, Input } from "@/components/ui";
+import { Card } from "@/components/ui";
+import { TrackForm } from "@/app/track/TrackForm";
+import { TRAINEE_NUMBER_ERROR, trackSchema } from "@/lib/validation";
 
 export const metadata = { title: "تتبّع الطلبات | نظام متابعة طلبات المتدربين" };
 
-/** إدخال الرقم التدريبي فقط — بدون رقم مرجعي وبدون تسجيل دخول */
+/**
+ * إدخال الرقم التدريبي فقط — بدون رقم مرجعي وبدون تسجيل دخول.
+ * التحقق يُعاد هنا في الخادم ولا يعتمد على تحقق العميل إطلاقًا.
+ */
 async function goToTrainee(formData: FormData) {
   "use server";
-  const traineeNumber = String(formData.get("traineeNumber") ?? "").trim();
-  if (!traineeNumber) redirect("/track?error=1");
-  redirect(`/track/${encodeURIComponent(traineeNumber)}`);
+  const parsed = trackSchema.safeParse({ traineeNumber: formData.get("traineeNumber") });
+  if (!parsed.success) redirect("/track?error=format");
+  redirect(`/track/${encodeURIComponent(parsed.data.traineeNumber)}`);
 }
 
 export default async function TrackPage({
@@ -29,15 +34,7 @@ export default async function TrackPage({
         </p>
 
         <Card className="mt-8 p-6">
-          <form action={goToTrainee} className="flex flex-col gap-4">
-            <Field
-              label="الرقم التدريبي"
-              error={error ? "الرجاء إدخال الرقم التدريبي" : undefined}
-            >
-              <Input name="traineeNumber" required placeholder="مثال: 4412345" autoFocus />
-            </Field>
-            <Button type="submit">عرض طلباتي</Button>
-          </form>
+          <TrackForm action={goToTrainee} serverError={error ? TRAINEE_NUMBER_ERROR : undefined} />
         </Card>
       </main>
     </>

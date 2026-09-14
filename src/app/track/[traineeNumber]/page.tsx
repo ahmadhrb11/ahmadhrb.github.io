@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { SiteHeader } from "@/components/SiteHeader";
 import { StatusBadge, TypeBadge } from "@/components/StatusBadge";
 import { Card, CardHeader, EmptyState, RefCode } from "@/components/ui";
 import { prisma } from "@/lib/prisma";
 import { formatDateTime, shortId } from "@/lib/format";
+import { isValidTraineeNumber } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "طلباتي | نظام متابعة طلبات المتدربين" };
@@ -16,6 +18,9 @@ export default async function TraineeRequestsPage({
 }) {
   const { traineeNumber: raw } = await params;
   const traineeNumber = decodeURIComponent(raw);
+
+  // تحقق من الخادم لمن يكتب الرابط مباشرة متجاوزًا النموذج — قبل أي استعلام
+  if (!isValidTraineeNumber(traineeNumber)) redirect("/track?error=format");
 
   const requests = await prisma.request.findMany({
     where: { traineeNumber },

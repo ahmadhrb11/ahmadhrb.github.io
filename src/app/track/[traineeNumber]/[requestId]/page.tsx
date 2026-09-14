@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { SiteHeader } from "@/components/SiteHeader";
 import { Conversation } from "@/components/Conversation";
 import { MessageForm } from "@/components/MessageForm";
@@ -9,6 +9,7 @@ import { traineeMessageAction } from "@/actions/messages";
 import { prisma } from "@/lib/prisma";
 import { OPEN_CONVERSATION_STATUSES, STATUS_LABELS } from "@/lib/constants";
 import { shortId } from "@/lib/format";
+import { isValidTraineeNumber } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,9 @@ export default async function TraineeRequestPage({
 }) {
   const { traineeNumber: raw, requestId } = await params;
   const traineeNumber = decodeURIComponent(raw);
+
+  // تحقق من الخادم لمن يكتب الرابط مباشرة متجاوزًا النموذج — قبل أي استعلام
+  if (!isValidTraineeNumber(traineeNumber)) redirect("/track?error=format");
 
   // التقييد بالرقم التدريبي يمنع فتح طلب لا يخص صاحب الرقم
   const request = await prisma.request.findFirst({

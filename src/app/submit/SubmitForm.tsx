@@ -1,17 +1,29 @@
 "use client";
 
 /** نموذج تقديم الطلب العام (بدون تسجيل دخول) */
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { submitRequestAction } from "@/actions/requests";
 import { Alert, Button, Card, Field, Input, Select, Textarea } from "@/components/ui";
 import { TYPE_LABELS } from "@/lib/constants";
-import type { ActionState } from "@/lib/validation";
+import {
+  TRAINEE_NUMBER_ERROR,
+  TRAINEE_NUMBER_LENGTH,
+  isValidTraineeNumber,
+  type ActionState,
+} from "@/lib/validation";
 
 const initialState: ActionState = { ok: false };
 
 export function SubmitForm({ specialties }: { specialties: { id: string; name: string }[] }) {
   const [state, formAction, pending] = useActionState(submitRequestAction, initialState);
   const errors = state.fieldErrors ?? {};
+
+  // تحقق فوري من الرقم التدريبي أثناء الكتابة — نفس الدالة المستخدمة في الخادم
+  const [traineeNumber, setTraineeNumber] = useState("");
+  const [touched, setTouched] = useState(false);
+  const numberInvalid = touched && !isValidTraineeNumber(traineeNumber);
+  // خطأ العميل الفوري يسبق خطأ الخادم في العرض، وكلاهما يظهر في نفس المكان
+  const numberError = numberInvalid ? TRAINEE_NUMBER_ERROR : errors.traineeNumber;
 
   return (
     <Card className="p-6">
@@ -20,8 +32,25 @@ export function SubmitForm({ specialties }: { specialties: { id: string; name: s
           <Input name="traineeName" required maxLength={120} placeholder="الاسم الثلاثي" />
         </Field>
 
-        <Field label="الرقم التدريبي" error={errors.traineeNumber} hint="ستستخدمه لاحقًا لتتبّع جميع طلباتك">
-          <Input name="traineeNumber" required maxLength={40} placeholder="مثال: 4412345" />
+        <Field
+          label="الرقم التدريبي"
+          error={numberError}
+          hint={`${TRAINEE_NUMBER_LENGTH} أرقام — ستستخدمه لاحقًا لتتبّع جميع طلباتك`}
+        >
+          <Input
+            name="traineeNumber"
+            required
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={TRAINEE_NUMBER_LENGTH}
+            pattern="[0-9]{9}"
+            title={TRAINEE_NUMBER_ERROR}
+            placeholder="مثال: 442412345"
+            value={traineeNumber}
+            aria-invalid={numberInvalid || undefined}
+            onChange={(event) => setTraineeNumber(event.target.value)}
+            onBlur={() => setTouched(true)}
+          />
         </Field>
 
         <Field label="التخصص" error={errors.specialtyId}>
@@ -66,7 +95,7 @@ export function SubmitForm({ specialties }: { specialties: { id: string; name: s
 
         {state.message && !state.ok ? <Alert tone="error">{state.message}</Alert> : null}
 
-        <Button type="submit" disabled={pending}>
+        <Button type="submit" disabled={pending || !isValidTraineeNumber(traineeNumber)}>
           {pending ? "جارٍ الإرسال..." : "إرسال الطلب"}
         </Button>
       </form>

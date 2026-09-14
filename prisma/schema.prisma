@@ -81,7 +81,10 @@ model Specialty {
 model Request {
   id            String        @id @default(cuid())
   traineeName   String
-  traineeNumber String // المفتاح الوحيد الذي يستخدمه المتدرب في /track
+  traineeNumber String // 9 خانات رقمية — المفتاح الوحيد الذي يستخدمه المتدرب في /track
+  /// بريد المتدرب المولّد تلقائيًا في الخادم بصيغة {traineeNumber}@tvtc.edu.sa
+  /// مخزَّن جاهزًا لإشعارات البريد لاحقًا؛ لا يُدخله المستخدم ولا يُرسل من الواجهة.
+  traineeEmail  String
   specialtyId   String
   type          RequestType
   body          String

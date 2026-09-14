@@ -31,6 +31,11 @@ export function RequestMeta({ request }: { request: RequestWithRelations }) {
       <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Row label="اسم المتدرب" value={request.traineeName} />
         <Row label="الرقم التدريبي" value={request.traineeNumber} />
+        {/* بريد مولّد تلقائيًا من الرقم التدريبي — جاهز لإشعارات البريد لاحقًا */}
+        <Row
+          label="بريد المتدرب (مولّد تلقائيًا)"
+          value={<span dir="ltr">{request.traineeEmail}</span>}
+        />
         <Row label="التخصص" value={request.specialty.name} />
         <Row label="تاريخ التقديم" value={formatDateTime(request.createdAt)} />
         <Row label="رئيس القسم المسؤول" value={request.assignedHead?.name ?? "— لم يُحوَّل بعد —"} />

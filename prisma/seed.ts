@@ -11,6 +11,7 @@
 import type { RequestStatus, SenderRole } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
+import { buildTraineeEmail } from "../src/lib/validation";
 
 /** كلمات المرور التجريبية — موثّقة في README */
 const PASSWORDS = {
@@ -117,6 +118,8 @@ async function main() {
       data: {
         traineeName: input.traineeName,
         traineeNumber: input.traineeNumber,
+        // نفس التوليد الذي يجري في الخادم عند تقديم أي طلب
+        traineeEmail: buildTraineeEmail(input.traineeNumber),
         specialtyId: input.specialtyId,
         type: input.type,
         body: input.body,
@@ -165,7 +168,7 @@ async function main() {
   // ---------- 1) طلب جديد بحالة «قيد المراجعة» (يُظهر عدّاد الأدمن) ----------
   await createRequest({
     traineeName: "عبدالله الزهراني",
-    traineeNumber: "4412001",
+    traineeNumber: "442412001",
     specialtyId: it.id,
     type: "REQUEST",
     body: "أرغب في تحويل شعبتي من الفترة المسائية إلى الفترة الصباحية بسبب ظروف العمل.",
@@ -187,7 +190,7 @@ async function main() {
   // ---------- 2) طلب «قيد المعالجة» بمحادثة متبادلة جارية ----------
   await createRequest({
     traineeName: "نورة السالم",
-    traineeNumber: "4412002",
+    traineeNumber: "442412002",
     specialtyId: it.id,
     type: "INQUIRY",
     body: "متى يبدأ التسجيل في مادة قواعد البيانات المتقدمة؟ ولا أجد الشعبة في النظام.",
@@ -244,7 +247,7 @@ async function main() {
   // ---------- 3) طلب «مُصعّد لوكيل التدريب» (لتجربة سيناريو الوكيل مباشرة) ----------
   await createRequest({
     traineeName: "محمد العمري",
-    traineeNumber: "4412003",
+    traineeNumber: "442412003",
     specialtyId: electricity.id,
     type: "COMPLAINT",
     body: "أجهزة القياس في معمل الكهرباء معطّلة منذ أسبوعين ولم يتم إصلاحها، مما أثّر على التطبيق العملي.",
@@ -317,7 +320,7 @@ async function main() {
   // ---------- 4) طلب «مرفوض» بسبب مكتوب ----------
   await createRequest({
     traineeName: "ريم الحربي",
-    traineeNumber: "4412004",
+    traineeNumber: "442412004",
     specialtyId: business.id,
     type: "REQUEST",
     body: "أطلب إعفائي من حضور التدريب الميداني هذا الفصل.",
@@ -356,7 +359,7 @@ async function main() {
   // ---------- 5) طلب متأخر جاهز للتصعيد (لتجربة الـ cron حيًّا) ----------
   await createRequest({
     traineeName: "سلطان الدوسري",
-    traineeNumber: "4412005",
+    traineeNumber: "442412005",
     specialtyId: electronics.id,
     type: "REQUEST",
     body: "أحتاج إعادة جدولة اختبار عملي فاتني بسبب ظرف صحي، مع إرفاق التقرير الطبي.",
@@ -416,7 +419,7 @@ async function main() {
   رئيس قسم (إلكترونيات)    : ${headElectronics.email} / ${PASSWORDS.head}
 
 أرقام تدريبية للتجربة في /track :
-  4412001 (قيد المراجعة) · 4412002 (قيد المعالجة) · 4412003 (مُصعّد) · 4412004 (مرفوض) · 4412005 (متأخر، جاهز للتصعيد)
+  442412001 (قيد المراجعة) · 442412002 (قيد المعالجة) · 442412003 (مُصعّد) · 442412004 (مرفوض) · 442412005 (متأخر، جاهز للتصعيد)
 `);
 }
 
