@@ -13,7 +13,8 @@
     "db:reset": "prisma migrate reset --force",
     "escalate": "tsx scripts/escalate.ts",
     "postinstall": "prisma generate",
-    "simulate:delay": "tsx scripts/simulate-delay.ts"
+    "simulate:delay": "tsx scripts/simulate-delay.ts",
+    "notify:test": "tsx scripts/test-notification.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

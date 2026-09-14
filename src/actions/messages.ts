@@ -5,10 +5,16 @@
  * كل إجراء يتحقق من الصلاحية ومن كون الطلب ما زال يقبل ردودًا.
  */
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/guards";
 import { messageSchema, zodFieldErrors, type ActionState } from "@/lib/validation";
 import { OPEN_CONVERSATION_STATUSES } from "@/lib/constants";
+import {
+  notifiableRequestSelect,
+  notifyDepartmentReply,
+  notifyTraineeReply,
+} from "@/lib/notifications";
 
 /**
  * رسالة من المتدرب عبر /track.
@@ -47,6 +53,14 @@ export async function traineeMessageAction(
   });
 
   // ملاحظة: ردّ المتدرب لا يُحدّث lastHeadReplyAt — مؤقّت التصعيد يعتمد على رد رئيس القسم فقط.
+  after(async () => {
+    const notifiable = await prisma.request.findUnique({
+      where: { id: request.id },
+      select: notifiableRequestSelect,
+    });
+    if (notifiable) await notifyTraineeReply(notifiable, parsed.data.body);
+  });
+
   revalidatePath(`/track/${encodeURIComponent(traineeNumber)}/${request.id}`);
   revalidatePath(`/admin/requests/${request.id}`);
   revalidatePath("/department");
@@ -112,6 +126,16 @@ export async function staffMessageAction(
       ? [prisma.request.update({ where: { id: request.id }, data: { lastHeadReplyAt: now } })]
       : []),
   ]);
+
+  // رسالة أي طرف مسؤول (رئيس قسم أو وكيل أو مسؤول نظام) يراها المتدرب في /track،
+  // فيُشعَر بها في الحالات الثلاث.
+  after(async () => {
+    const notifiable = await prisma.request.findUnique({
+      where: { id: request.id },
+      select: notifiableRequestSelect,
+    });
+    if (notifiable) await notifyDepartmentReply(notifiable, user.name, parsed.data.body);
+  });
 
   revalidatePath(`/track/${encodeURIComponent(request.traineeNumber)}/${request.id}`);
   revalidatePath(`/admin/requests/${request.id}`);

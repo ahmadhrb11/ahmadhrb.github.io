@@ -10,6 +10,7 @@
  */
 import { prisma } from "@/lib/prisma";
 import { ESCALATION_DAYS } from "@/lib/constants";
+import { notifiableRequestSelect, notifyEscalation } from "@/lib/notifications";
 
 export type EscalationResult = {
   escalatedCount: number;
@@ -28,7 +29,8 @@ export async function runEscalation(days: number = ESCALATION_DAYS): Promise<Esc
       status: "IN_PROGRESS",
       lastHeadReplyAt: { lt: cutoff },
     },
-    select: { id: true, lastHeadReplyAt: true },
+    // الحقول الإضافية لازمة لبناء payload الإشعار فقط — لا تؤثر على منطق التصعيد
+    select: { ...notifiableRequestSelect, lastHeadReplyAt: true },
   });
 
   const reason = `مرور ${days} أيام دون رد من رئيس القسم`;
@@ -65,6 +67,11 @@ export async function runEscalation(days: number = ESCALATION_DAYS): Promise<Esc
       }),
     ]);
     escalatedIds.push(request.id);
+
+    // تُستدعى runEscalation أيضًا من سكربت npm run escalate خارج أي طلب HTTP،
+    // حيث after() غير متاحة — فالانتظار المباشر هو الصحيح هنا. الدالة لا ترمي
+    // استثناءً أبدًا، فلا يمكن أن يفشل التصعيد بسبب إشعار.
+    await notifyEscalation({ ...request, status: "ESCALATED" }, reason);
   }
 
   return {

@@ -5,8 +5,16 @@
  */
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/guards";
+import {
+  notifiableRequestSelect,
+  notifyNewRequestSubmitted,
+  notifyRequestApproved,
+  notifyRequestClosed,
+  notifyRequestRejected,
+} from "@/lib/notifications";
 import {
   buildTraineeEmail,
   rejectSchema,
@@ -74,6 +82,17 @@ export async function submitRequestAction(
   });
 
   revalidatePath("/admin");
+
+  // الإشعار يُرسل بعد إرسال الاستجابة عبر after() — لا يؤخّر المستخدم،
+  // وعلى بيئات serverless لا يُقتل الطلب قبل اكتماله كما يحدث مع الوعد غير المنتظَر.
+  after(async () => {
+    const notifiable = await prisma.request.findUnique({
+      where: { id: created.id },
+      select: notifiableRequestSelect,
+    });
+    if (notifiable) await notifyNewRequestSubmitted(notifiable);
+  });
+
   redirect(`/submit/success?ref=${created.id}&n=${encodeURIComponent(data.traineeNumber)}`);
 }
 
@@ -138,6 +157,15 @@ export async function approveRequestAction(
   revalidatePath("/admin");
   revalidatePath(`/admin/requests/${requestId}`);
   revalidatePath("/department");
+
+  after(async () => {
+    const notifiable = await prisma.request.findUnique({
+      where: { id: requestId },
+      select: notifiableRequestSelect,
+    });
+    if (notifiable) await notifyRequestApproved(notifiable, head.name);
+  });
+
   return { ok: true, message: `تمت الموافقة وتحويل الطلب إلى ${head.name}` };
 }
 
@@ -193,6 +221,15 @@ export async function rejectRequestAction(
 
   revalidatePath("/admin");
   revalidatePath(`/admin/requests/${requestId}`);
+
+  after(async () => {
+    const notifiable = await prisma.request.findUnique({
+      where: { id: requestId },
+      select: notifiableRequestSelect,
+    });
+    if (notifiable) await notifyRequestRejected(notifiable, reason);
+  });
+
   return { ok: true, message: "تم رفض الطلب وإبلاغ المتدرب بالسبب" };
 }
 
@@ -240,5 +277,14 @@ export async function completeRequestAction(
   revalidatePath(`/admin/requests/${requestId}`);
   revalidatePath("/department");
   revalidatePath("/deputy");
+
+  after(async () => {
+    const notifiable = await prisma.request.findUnique({
+      where: { id: requestId },
+      select: notifiableRequestSelect,
+    });
+    if (notifiable) await notifyRequestClosed(notifiable);
+  });
+
   return { ok: true, message: "تم إنهاء الطلب" };
 }

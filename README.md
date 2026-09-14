@@ -11,6 +11,7 @@
 - [لوحة المعلومات التحليلية](#لوحة-المعلومات-التحليلية)
 - [الرقم التدريبي وبريد المتدرب](#الرقم-التدريبي-وبريد-المتدرب)
 - [سير عمل الطلب وحالاته](#سير-عمل-الطلب-وحالاته)
+- [الإشعارات البريدية (Power Automate)](#الإشعارات-البريدية-power-automate)
 - [التشغيل محليًا](#التشغيل-محليًا)
 - [بيانات الدخول التجريبية](#بيانات-الدخول-التجريبية)
 - [اختبار التصعيد التلقائي](#اختبار-التصعيد-التلقائي)
@@ -161,6 +162,97 @@
 - مؤقّت التصعيد هو الحقل `Request.lastHeadReplyAt`: يُضبط لحظة **موافقة الأدمن**، ثم لا يُحدَّث إلا عند **رسالة من رئيس القسم نفسه**.
 - **ردود المتدرب لا تُعيد ضبط المؤقّت** — أي أن التأخر يُحسب على رئيس القسم فقط، تمامًا كما هو مطلوب.
 - عند التصعيد: تتغيّر الحالة، وتُضاف **رسالة نظام** ظاهرة للجميع داخل المحادثة، ويُسجَّل **قيد في سجل الحالة** يوضّح الوقت والسبب.
+
+---
+
+## الإشعارات البريدية (Power Automate)
+
+### كيف تعمل
+
+**النظام لا يرسل بريدًا بنفسه.** عند وقوع حدث، يرسل طلب `POST` واحدًا بـ JSON لكل مستلم إلى **رابط Power Automate واحد موحّد لجميع الأدوار**، والـ Flow هو من يبني الرسالة ويرسلها عبر Office 365 Outlook. تفريع محتوى الإيميل حسب الدور يُدار داخل Power Automate عبر حقل `recipientRole` — لا علاقة للكود به.
+
+لا توجد أي مكتبة بريد في المشروع؛ الاعتماد على `fetch` المدمج في Node فقط.
+
+### ضمانات السلامة
+
+| الضمان | التنفيذ |
+|---|---|
+| لا يفشل أي إجراء بسبب الإشعار | الطبقة **لا ترمي استثناءً أبدًا**؛ الأخطاء تُسجَّل في console فقط |
+| لا يتأخر أي إجراء | مهلة **8 ثوانٍ** لكل طلب، والإرسال يتم **بعد** إرسال الاستجابة عبر `after()` من `next/server` |
+| فشل مستلم لا يمنع الباقي | طلب `POST` مستقل لكل مستلم، بـ `try/catch` مستقل |
+| تعطيل آمن | بلا `POWER_AUTOMATE_WEBHOOK_URL` يعمل النظام كالمعتاد مع تحذير واحد في السجل، بلا أي محاولة إرسال |
+
+> **لماذا `after()` لا الإرسال المعلّق العادي؟** الوعد غير المُنتظَر داخل Server Action يُقتل على Vercel لحظة إرسال الاستجابة، فتضيع الإشعارات صامتةً. `after()` مصمّمة لتشغيل عمل بعد الاستجابة دون تأخيرها.
+>
+> يُستثنى من ذلك التصعيد التلقائي في `src/lib/escalation.ts`: يُنتظر الإشعار مباشرةً لأن الدالة تعمل أيضًا من سكربت `npm run escalate` خارج أي طلب HTTP، حيث `after()` غير متاحة.
+
+### الأحداث والمستلمون
+
+| الحدث | `eventType` | المستلمون |
+|---|---|---|
+| تقديم طلب جديد | `new_request` | كل مسؤولي النظام المفعّلين |
+| موافقة الأدمن وتحويل الطلب | `approved` | المتدرب + رئيس القسم المعيَّن |
+| رفض الأدمن | `rejected` | المتدرب فقط (السبب داخل `message`) |
+| رد رئيس القسم أو الوكيل أو الأدمن | `department_reply` | المتدرب فقط |
+| رد المتدرب في المحادثة | `trainee_reply` | المسؤول الحالي (رئيس القسم قبل التصعيد، الوكيل بعده) + نسخة لكل الأدمن |
+| التصعيد التلقائي | `escalated` | كل وكلاء التدريب + نسخة لكل الأدمن — **المتدرب لا يُشعَر** |
+| إنهاء الأدمن للطلب | `closed` | المتدرب |
+
+**مصدر بريد كل مستلم:** المتدرب من `Request.traineeEmail` المخزَّن مسبقًا (لا يُعاد توليده)، وبقية الأدوار من `User.email`. الحسابات المعطَّلة (`isActive = false`) تُستثنى تلقائيًا.
+
+### شكل الـ JSON
+
+هذا ما يصل إلى المحفّز — استخدمه في **Use sample payload to generate schema** داخل Power Automate:
+
+```json
+{
+  "eventType": "new_request",
+  "requestId": "cmu1gbh9400017dxq0nu5v521",
+  "studentName": "بدر القرني",
+  "trainingNumber": "442488888",
+  "specialization": "تقنية معلومات",
+  "requestType": "شكوى",
+  "recipientEmail": "admin@tvtc.local",
+  "recipientRole": "admin",
+  "message": "طلب جديد من المتدرب بدر القرني (442488888) بحالة «قيد المراجعة» وينتظر قرارك.",
+  "requestUrl": "https://your-app.vercel.app/admin/requests/cmu1gbh9400017dxq0nu5v521"
+}
+```
+
+- `recipientRole` يأخذ إحدى القيم: `trainee` · `admin` · `department_head` · `training_deputy`
+- `requestUrl` يشير للوحة المناسبة لكل دور: `/track/{الرقم}/{المعرّف}` للمتدرب، و`/admin/requests/…` و`/department/requests/…` و`/deputy/requests/…` للإداريين
+- `requestType` نص عربي: طلب / شكوى / استفسار
+
+### خطوات إنشاء الـ Flow
+
+1. من [make.powerautomate.com](https://make.powerautomate.com) اختر **Create → Instant cloud flow**.
+2. المحفّز: **When an HTTP request is received**.
+3. اضغط **Use sample payload to generate schema** والصق نموذج الـ JSON أعلاه.
+4. أضف خطوة **Switch** على `recipientRole` (من محتوى المحفّز الديناميكي)، بأربع حالات: `trainee` · `admin` · `department_head` · `training_deputy`.
+5. داخل كل حالة، أضف **Send an email (V2)** من Office 365 Outlook:
+   - **To**: `recipientEmail`
+   - **Subject**: صُغه حسب الدور، مثل `تحديث على طلبك رقم @{triggerBody()?['requestId']}` للمتدرب، أو `طلب جديد بانتظار إجراءك` للأدمن
+   - **Body**: استخدم `message` و`studentName` و`trainingNumber` و`specialization` و`requestType`، مع رابط `requestUrl` كزر أو وصلة
+6. **احفظ الـ Flow** — يظهر رابط `HTTP POST URL` في المحفّز بعد الحفظ فقط.
+7. انسخ الرابط وضعه في `.env`:
+
+```bash
+POWER_AUTOMATE_WEBHOOK_URL="https://prod-xx.westeurope.logic.azure.com:443/workflows/.../triggers/manual/paths/invoke?...&sig=..."
+```
+
+> ⚠️ الرابط يحمل **توقيع وصول** (`sig=`) بداخله — عامله كسرّ. ضعه في `.env` (المتجاهَل من git) وفي متغيّرات بيئة Vercel، لا في الكود.
+
+على Vercel أضف أيضًا `AUTH_URL` (أو `APP_BASE_URL`) ليكون `requestUrl` رابطًا كاملًا صحيحًا بدل `localhost`.
+
+### اختبار الـ Flow قبل ربطه
+
+```bash
+npm run notify:test                              # حدث new_request لمسؤول النظام
+npm run notify:test -- approved trainee          # تحديد الحدث والدور
+npm run notify:test -- closed trainee 442412001@tvtc.edu.sa
+```
+
+يرسل الأمر payload تجريبيًا واحدًا للرابط المضبوط، فتتحقق من الـ Flow ومطابقة الحقول قبل ربطه بالنظام الفعلي.
 
 ---
 
@@ -369,6 +461,8 @@ TURSO_DATABASE_URL="libsql://..." TURSO_AUTH_TOKEN="ey..." npx tsx prisma/seed.t
 | `AUTH_TRUST_HOST` | لا | مضبوط أصلًا في الكود (`trustHost: true`) ليعمل خارج Vercel أيضًا — لا حاجة لضبطه |
 | `CRON_SECRET` | مُستحسن | حماية مسار `/api/cron/escalate` (إن تُرك فارغًا يصبح المسار مفتوحًا — للتطوير المحلي فقط) |
 | `ESCALATION_DAYS` | لا | مهلة التصعيد بالأيام (الافتراضي `3`) |
+| `POWER_AUTOMATE_WEBHOOK_URL` | لا | رابط الـ Flow للإشعارات البريدية — فارغًا تُعطَّل الميزة بأمان |
+| `APP_BASE_URL` | لا | عنوان الموقع في روابط الإشعارات (يُستخدم `AUTH_URL` إن تُرك فارغًا) |
 | `TURSO_DATABASE_URL` | في الإنتاج | عند وجوده يتحوّل التطبيق تلقائيًا إلى Turso |
 | `TURSO_AUTH_TOKEN` | في الإنتاج | رمز الوصول لقاعدة Turso |
 
@@ -384,6 +478,7 @@ prisma/
 
 scripts/
   escalate.ts              تشغيل التصعيد محليًا بلا HTTP
+  test-notification.ts     إرسال payload تجريبي لاختبار الـ Flow
   simulate-delay.ts        أداة تطوير لمحاكاة تأخّر رئيس القسم
 
 src/
@@ -409,6 +504,7 @@ src/
     auth.ts                إعداد NextAuth
     guards.ts              حُرّاس الأدوار
     escalation.ts          منطق التصعيد التلقائي
+    notifications.ts       إشعارات Power Automate (سبعة أحداث)
     analytics.ts           تجميعات لوحة المعلومات
     constants.ts           التسميات العربية للحالات والأنواع
     validation.ts          تحقق الرقم التدريبي + توليد البريد + مخططات Zod
@@ -435,6 +531,7 @@ src/
 | `npm run db:reset` | إعادة بناء القاعدة من الصفر + تعبئة |
 | `npm run escalate` | تشغيل التصعيد التلقائي يدويًا |
 | `npm run simulate:delay` | محاكاة تأخّر رئيس القسم لاختبار التصعيد |
+| `npm run notify:test` | إرسال إشعار تجريبي لاختبار Flow في Power Automate |
 
 ---
 
