@@ -11,7 +11,7 @@
 - [لوحة المعلومات التحليلية](#لوحة-المعلومات-التحليلية)
 - [الرقم التدريبي وبريد المتدرب](#الرقم-التدريبي-وبريد-المتدرب)
 - [سير عمل الطلب وحالاته](#سير-عمل-الطلب-وحالاته)
-- [الإشعارات البريدية (Power Automate)](#الإشعارات-البريدية-power-automate)
+- [الإشعارات البريدية (Resend + Power Automate Relay)](#الإشعارات-البريدية-resend--power-automate-relay)
 - [التشغيل محليًا](#التشغيل-محليًا)
 - [بيانات الدخول التجريبية](#بيانات-الدخول-التجريبية)
 - [اختبار التصعيد التلقائي](#اختبار-التصعيد-التلقائي)
@@ -33,6 +33,7 @@
 | قاعدة بيانات الإنتاج | Turso (libSQL) عبر `@prisma/adapter-libsql` |
 | التصميم | Tailwind CSS v4 — واجهة عربية RTL بالكامل |
 | المصادقة | NextAuth.js v5 (Credentials) — بريد وكلمة مرور بتحقق محلي، بدون بريد فعلي |
+| الإشعارات البريدية | Resend SDK ← صندوق تتابع ← Power Automate |
 | التحقق من المدخلات | Zod |
 | الطفرات | Server Actions |
 
@@ -165,26 +166,58 @@
 
 ---
 
-## الإشعارات البريدية (Power Automate)
+## الإشعارات البريدية (Resend + Power Automate Relay)
 
-### كيف تعمل
+### سلسلة التتابع
 
-**النظام لا يرسل بريدًا بنفسه.** عند وقوع حدث، يرسل طلب `POST` واحدًا بـ JSON لكل مستلم إلى **رابط Power Automate واحد موحّد لجميع الأدوار**، والـ Flow هو من يبني الرسالة ويرسلها عبر Office 365 Outlook. تفريع محتوى الإيميل حسب الدور يُدار داخل Power Automate عبر حقل `recipientRole` — لا علاقة للكود به.
+النظام لا يرسل الإيميل النهائي بنفسه. الرسالة تمر بخطوتين:
 
-لا توجد أي مكتبة بريد في المشروع؛ الاعتماد على `fetch` المدمج في Node فقط.
+```
+حدث في النظام
+   ↓
+[1] الكود ← يرسل عبر Resend «إيميل حاوية» نصيًّا
+   ↓
+notifications@tvtc.edu.sa   (صندوق مؤسسي واحد ثابت)
+   ↓
+[2] Power Automate ← يراقب الصندوق، يحلّل أسطر «مفتاح: قيمة»
+   ↓
+إيميل رسمي منسّق عبر Office 365 ← المستلم الحقيقي
+```
 
-### ضمانات السلامة
+**الخطوة [1] فقط داخل هذا الكود.** الخطوة [2] تُعَدّ يدويًا في Power Automate خارج المشروع.
 
-| الضمان | التنفيذ |
-|---|---|
-| لا يفشل أي إجراء بسبب الإشعار | الطبقة **لا ترمي استثناءً أبدًا**؛ الأخطاء تُسجَّل في console فقط |
-| لا يتأخر أي إجراء | مهلة **8 ثوانٍ** لكل طلب، والإرسال يتم **بعد** إرسال الاستجابة عبر `after()` من `next/server` |
-| فشل مستلم لا يمنع الباقي | طلب `POST` مستقل لكل مستلم، بـ `try/catch` مستقل |
-| تعطيل آمن | بلا `POWER_AUTOMATE_WEBHOOK_URL` يعمل النظام كالمعتاد مع تحذير واحد في السجل، بلا أي محاولة إرسال |
+> **لماذا هذا التصميم؟** محفّز `When an HTTP request is received` في Power Automate يتطلب ترخيص **Premium**، بينما `When a new email arrives (V3)` قياسي ومتاح في التراخيص العادية. التتابع عبر البريد هو الطريق العملي حول هذا القيد.
 
-> **لماذا `after()` لا الإرسال المعلّق العادي؟** الوعد غير المُنتظَر داخل Server Action يُقتل على Vercel لحظة إرسال الاستجابة، فتضيع الإشعارات صامتةً. `after()` مصمّمة لتشغيل عمل بعد الاستجابة دون تأخيرها.
->
-> يُستثنى من ذلك التصعيد التلقائي في `src/lib/escalation.ts`: يُنتظر الإشعار مباشرةً لأن الدالة تعمل أيضًا من سكربت `npm run escalate` خارج أي طلب HTTP، حيث `after()` غير متاحة.
+**إيميل حاوية مستقل لكل مستلم**: عند حدث بمستلمين (مثل التصعيد) تصل رسالتان إلى نفس الصندوق، تختلفان في `recipientEmail` و`recipientRole` داخل المتن، ليميّز Power Automate بينهما.
+
+### صيغة الإيميل الحاوية
+
+**العنوان** — بادئة ثابتة يسهل التصفية عليها، متبوعة بنوع الحدث:
+
+```
+[TRAINEE-NOTIFY] approved
+```
+
+**المتن** — نص عادي (لا HTML)، **عشرة أسطر بالضبط** بنفس الترتيب والأسماء في كل رسالة بلا استثناء، بلا تحية ولا توقيع ولا أي سطر إضافي:
+
+```
+eventType: approved
+requestId: cmu27ugdp00017dq1fkf3zr6h
+studentName: أحمد محمد
+trainingNumber: 442412345
+specialization: تقنية معلومات
+requestType: طلب
+recipientEmail: 442412345@tvtc.edu.sa
+recipientRole: trainee
+message: تمت الموافقة على طلبك وتحويله إلى رئيس قسم تقنية معلومات: خالد الشمري.
+requestUrl: https://your-app.vercel.app/track/442412345/cmu27ugdp00017dq1fkf3zr6h
+```
+
+- `recipientRole` يأخذ إحدى القيم: `trainee` · `admin` · `department_head` · `training_deputy`
+- `requestUrl` يشير للوحة المناسبة لكل دور: `/track/{الرقم}/{المعرّف}` للمتدرب، و`/admin/requests/…` و`/department/requests/…` و`/deputy/requests/…` للإداريين
+- `requestType` نص عربي: طلب / شكوى / استفسار
+
+> ⚠️ **قاعدة التحليل المهمة:** افصل المفتاح عن القيمة عند **أول `": "` في السطر فقط**، لا عند كل نقطتين — لأن `requestUrl` يحوي `https://` بداخله. كل القيم مطبَّعة في الكود إلى سطر واحد (تُستبدل الأسطر الجديدة والجدولات بمسافة)، فلا يمكن لردّ متدرب متعدد الأسطر أن يكسر التحليل.
 
 ### الأحداث والمستلمون
 
@@ -198,53 +231,63 @@
 | التصعيد التلقائي | `escalated` | كل وكلاء التدريب + نسخة لكل الأدمن — **المتدرب لا يُشعَر** |
 | إنهاء الأدمن للطلب | `closed` | المتدرب |
 
-**مصدر بريد كل مستلم:** المتدرب من `Request.traineeEmail` المخزَّن مسبقًا (لا يُعاد توليده)، وبقية الأدوار من `User.email`. الحسابات المعطَّلة (`isActive = false`) تُستثنى تلقائيًا.
+**مصدر بريد كل مستلم:** المتدرب من `Request.traineeEmail` المخزَّن مسبقًا، وبقية الأدوار من `User.email`. الحسابات المعطَّلة (`isActive = false`) تُستثنى تلقائيًا.
 
-### شكل الـ JSON
+### ضمانات السلامة
 
-هذا ما يصل إلى المحفّز — استخدمه في **Use sample payload to generate schema** داخل Power Automate:
+| الضمان | التنفيذ |
+|---|---|
+| لا يفشل أي إجراء بسبب الإشعار | الطبقة **لا ترمي استثناءً أبدًا**؛ الأخطاء تُسجَّل في console فقط |
+| لا يتأخر أي إجراء | الإرسال يتم **بعد** إرسال الاستجابة عبر `after()` من `next/server` |
+| فشل مستلم لا يمنع الباقي | إيميل مستقل لكل مستلم، بـ `try/catch` مستقل |
+| رفض Resend يُلتقط | الـ SDK يعيد `{ data, error }` ولا يرمي — يُفحص `error` صراحةً ويُسجَّل |
+| تعطيل آمن | بلا `RESEND_API_KEY` أو بلا `NOTIFICATIONS_RELAY_EMAIL` يعمل النظام كالمعتاد مع تحذير واحد، بلا أي محاولة إرسال |
 
-```json
-{
-  "eventType": "new_request",
-  "requestId": "cmu1gbh9400017dxq0nu5v521",
-  "studentName": "بدر القرني",
-  "trainingNumber": "442488888",
-  "specialization": "تقنية معلومات",
-  "requestType": "شكوى",
-  "recipientEmail": "admin@tvtc.local",
-  "recipientRole": "admin",
-  "message": "طلب جديد من المتدرب بدر القرني (442488888) بحالة «قيد المراجعة» وينتظر قرارك.",
-  "requestUrl": "https://your-app.vercel.app/admin/requests/cmu1gbh9400017dxq0nu5v521"
-}
-```
+> يُستثنى التصعيد التلقائي في `src/lib/escalation.ts`: يُنتظر الإشعار مباشرةً لأن الدالة تعمل أيضًا من سكربت `npm run escalate` خارج أي طلب HTTP حيث `after()` غير متاحة.
 
-- `recipientRole` يأخذ إحدى القيم: `trainee` · `admin` · `department_head` · `training_deputy`
-- `requestUrl` يشير للوحة المناسبة لكل دور: `/track/{الرقم}/{المعرّف}` للمتدرب، و`/admin/requests/…` و`/department/requests/…` و`/deputy/requests/…` للإداريين
-- `requestType` نص عربي: طلب / شكوى / استفسار
+### خطوات إعداد Resend
 
-### خطوات إنشاء الـ Flow
-
-1. من [make.powerautomate.com](https://make.powerautomate.com) اختر **Create → Instant cloud flow**.
-2. المحفّز: **When an HTTP request is received**.
-3. اضغط **Use sample payload to generate schema** والصق نموذج الـ JSON أعلاه.
-4. أضف خطوة **Switch** على `recipientRole` (من محتوى المحفّز الديناميكي)، بأربع حالات: `trainee` · `admin` · `department_head` · `training_deputy`.
-5. داخل كل حالة، أضف **Send an email (V2)** من Office 365 Outlook:
-   - **To**: `recipientEmail`
-   - **Subject**: صُغه حسب الدور، مثل `تحديث على طلبك رقم @{triggerBody()?['requestId']}` للمتدرب، أو `طلب جديد بانتظار إجراءك` للأدمن
-   - **Body**: استخدم `message` و`studentName` و`trainingNumber` و`specialization` و`requestType`، مع رابط `requestUrl` كزر أو وصلة
-6. **احفظ الـ Flow** — يظهر رابط `HTTP POST URL` في المحفّز بعد الحفظ فقط.
-7. انسخ الرابط وضعه في `.env`:
+1. أنشئ حسابًا مجانيًا على [resend.com](https://resend.com) — لا يحتاج حساب مايكروسوفت.
+2. من **API Keys** أنشئ مفتاحًا جديدًا بصلاحية **Sending access**.
+3. ضعه في `.env`:
 
 ```bash
-POWER_AUTOMATE_WEBHOOK_URL="https://prod-xx.westeurope.logic.azure.com:443/workflows/.../triggers/manual/paths/invoke?...&sig=..."
+RESEND_API_KEY="re_xxxxxxxxxxxxxxxxxxxx"
+RESEND_FROM_EMAIL="onboarding@resend.dev"
+NOTIFICATIONS_RELAY_EMAIL="notifications@tvtc.edu.sa"
 ```
 
-> ⚠️ الرابط يحمل **توقيع وصول** (`sig=`) بداخله — عامله كسرّ. ضعه في `.env` (المتجاهَل من git) وفي متغيّرات بيئة Vercel، لا في الكود.
+> ⚠️ **تنبيه مهم بخصوص المرسِل — تحقق منه قبل الاعتماد على النظام:**
+> المرسِل التجريبي `onboarding@resend.dev` قد يقصر الإرسال على **بريد صاحب حساب Resend نفسه**، أي أن الإرسال إلى `notifications@tvtc.edu.sa` سيُرفض حتى توثّق نطاقًا في Resend.
+>
+> لم أتمكن من التحقق من توثيق Resend أثناء التطوير (النطاق محجوب في بيئة التطوير المستخدمة)، فراجعه بنفسك. **إن صحّ هذا القيد فتوثيق النطاق شرط لعمل التتابع فعليًا، لا خطوة تجميلية اختيارية.**
+>
+> للاختبار السريع قبل التوثيق: اضبط `NOTIFICATIONS_RELAY_EMAIL` مؤقتًا على بريدك الشخصي المسجَّل في Resend.
+>
+> التوثيق يتم من **Domains → Add Domain** في Resend بإضافة سجلات DNS، وبعده اضبط `RESEND_FROM_EMAIL` على عنوان من نطاق الكلية.
+
+الرفض يُسجَّل في السجل بوضوح ولا يكسر شيئًا:
+
+```
+[notifications] رفض Resend الرسالة الخاصة بـ ... : validation_error — You can only send testing emails to your own email address
+```
+
+### إعداد Power Automate (خارج الكود)
+
+يُعَدّ يدويًا:
+
+1. **Create → Automated cloud flow**، المحفّز: **When a new email arrives (V3)** على صندوق `notifications@tvtc.edu.sa`.
+2. صفِّ على **Subject Filter** بالبادئة `[TRAINEE-NOTIFY]` حتى لا يلتقط الـ Flow بريدًا آخر.
+3. أضف خطوات تحليل لمتن الإيميل (`Body`) تستخرج كل حقل من الحقول العشرة، بقص السطر عند **أول `": "` فيه فقط**.
+4. أضف **Switch** على `recipientRole` بأربع حالات، وداخل كل حالة **Send an email (V2)** عبر Office 365 Outlook:
+   - **To**: قيمة `recipientEmail` المستخرَجة
+   - **Subject** و**Body**: صُغهما حسب الدور، مستخدمًا `message` و`studentName` و`trainingNumber` و`specialization` و`requestType` ورابط `requestUrl`.
+
+> ملاحظة: المحفّز يصل عادةً بمتن نصي؛ إن وصل بصيغة HTML فأضف خطوة **Html to text** قبل التحليل.
 
 على Vercel أضف أيضًا `AUTH_URL` (أو `APP_BASE_URL`) ليكون `requestUrl` رابطًا كاملًا صحيحًا بدل `localhost`.
 
-### اختبار الـ Flow قبل ربطه
+### اختبار الإعداد
 
 ```bash
 npm run notify:test                              # حدث new_request لمسؤول النظام
@@ -252,7 +295,7 @@ npm run notify:test -- approved trainee          # تحديد الحدث وال�
 npm run notify:test -- closed trainee 442412001@tvtc.edu.sa
 ```
 
-يرسل الأمر payload تجريبيًا واحدًا للرابط المضبوط، فتتحقق من الـ Flow ومطابقة الحقول قبل ربطه بالنظام الفعلي.
+يطبع الأمر العنوان والمتن كما سيصلان (انسخهما لبناء قواعد التحليل)، ثم يرسل الإيميل فعليًا إلى صندوق التتابع.
 
 ---
 
@@ -461,7 +504,9 @@ TURSO_DATABASE_URL="libsql://..." TURSO_AUTH_TOKEN="ey..." npx tsx prisma/seed.t
 | `AUTH_TRUST_HOST` | لا | مضبوط أصلًا في الكود (`trustHost: true`) ليعمل خارج Vercel أيضًا — لا حاجة لضبطه |
 | `CRON_SECRET` | مُستحسن | حماية مسار `/api/cron/escalate` (إن تُرك فارغًا يصبح المسار مفتوحًا — للتطوير المحلي فقط) |
 | `ESCALATION_DAYS` | لا | مهلة التصعيد بالأيام (الافتراضي `3`) |
-| `POWER_AUTOMATE_WEBHOOK_URL` | لا | رابط الـ Flow للإشعارات البريدية — فارغًا تُعطَّل الميزة بأمان |
+| `RESEND_API_KEY` | لا | مفتاح Resend — فارغًا تُعطَّل الإشعارات بأمان |
+| `RESEND_FROM_EMAIL` | لا | عنوان المرسِل (افتراضيًا نطاق Resend التجريبي) |
+| `NOTIFICATIONS_RELAY_EMAIL` | لا | صندوق التتابع الذي يراقبه Power Automate — فارغًا تُعطَّل الإشعارات |
 | `APP_BASE_URL` | لا | عنوان الموقع في روابط الإشعارات (يُستخدم `AUTH_URL` إن تُرك فارغًا) |
 | `TURSO_DATABASE_URL` | في الإنتاج | عند وجوده يتحوّل التطبيق تلقائيًا إلى Turso |
 | `TURSO_AUTH_TOKEN` | في الإنتاج | رمز الوصول لقاعدة Turso |
@@ -478,7 +523,7 @@ prisma/
 
 scripts/
   escalate.ts              تشغيل التصعيد محليًا بلا HTTP
-  test-notification.ts     إرسال payload تجريبي لاختبار الـ Flow
+  test-notification.ts     إرسال إيميل حاوية تجريبي لاختبار التتابع
   simulate-delay.ts        أداة تطوير لمحاكاة تأخّر رئيس القسم
 
 src/
@@ -504,7 +549,7 @@ src/
     auth.ts                إعداد NextAuth
     guards.ts              حُرّاس الأدوار
     escalation.ts          منطق التصعيد التلقائي
-    notifications.ts       إشعارات Power Automate (سبعة أحداث)
+    notifications.ts       إشعارات Resend (سبعة أحداث) + بناء الإيميل الحاوية
     analytics.ts           تجميعات لوحة المعلومات
     constants.ts           التسميات العربية للحالات والأنواع
     validation.ts          تحقق الرقم التدريبي + توليد البريد + مخططات Zod
@@ -531,7 +576,7 @@ src/
 | `npm run db:reset` | إعادة بناء القاعدة من الصفر + تعبئة |
 | `npm run escalate` | تشغيل التصعيد التلقائي يدويًا |
 | `npm run simulate:delay` | محاكاة تأخّر رئيس القسم لاختبار التصعيد |
-| `npm run notify:test` | إرسال إشعار تجريبي لاختبار Flow في Power Automate |
+| `npm run notify:test` | إرسال إيميل حاوية تجريبي لاختبار سلسلة التتابع |
 
 ---
 

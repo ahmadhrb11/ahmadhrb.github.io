@@ -1,21 +1,31 @@
 /**
- * طبقة الإشعارات البريدية عبر Power Automate.
+ * طبقة الإشعارات البريدية — سلسلة تتابع (relay) من خطوتين.
  *
- * الكود هنا لا يرسل بريدًا بنفسه: يرسل طلب HTTP POST واحدًا لكل مستلم إلى
- * رابط Flow موحّد، والـ Flow هو من يبني الرسالة ويرسلها عبر Office 365
- * (يفرّع على حقل recipientRole داخل Power Automate، لا هنا).
+ *   1. هذا الكود: يرسل عبر Resend إيميل «حاوية» نصيًّا واحدًا لكل مستلم إلى
+ *      صندوق بريد مؤسسي واحد ثابت (NOTIFICATIONS_RELAY_EMAIL). هذا الإيميل
+ *      ليس ما يراه المستلم النهائي — هو حاوية بيانات قابلة للتحليل الآلي.
+ *   2. خارج الكود: Power Automate يراقب ذلك الصندوق، يحلّل أسطر
+ *      «مفتاح: قيمة» من المتن، ثم يرسل الإيميل الرسمي للمستلم الحقيقي.
  *
  * ثلاث ضمانات أساسية:
  *   1. لا ترمي هذه الطبقة استثناءً أبدًا — فشل الإشعار لا يفشل أي عملية.
- *   2. لكل مستلم طلب مستقل بـ try/catch مستقل — فشل مستلم لا يمنع الباقي.
- *   3. بلا رابط مضبوط تُعطَّل الميزة بالكامل بتحذير واحد، بلا أي أثر آخر.
+ *   2. لكل مستلم إيميل مستقل بـ try/catch مستقل — فشل مستلم لا يمنع الباقي.
+ *   3. بلا مفتاح Resend أو بلا صندوق تتابع تُعطَّل الميزة بتحذير واحد.
  */
 import type { Prisma } from "@prisma/client";
+import { Resend } from "resend";
 import { prisma } from "@/lib/prisma";
 import { TYPE_LABELS } from "@/lib/constants";
 
-/** مهلة كل طلب — حتى لا يعلّق Power Automate البطيء أي شيء */
-const REQUEST_TIMEOUT_MS = 8000;
+/** بادئة ثابتة في عنوان الإيميل ليسهل التصفية عليها في Power Automate */
+const SUBJECT_PREFIX = "[TRAINEE-NOTIFY]";
+
+/**
+ * عنوان المرسِل الافتراضي.
+ * مؤقت على نطاق Resend التجريبي لحين توثيق نطاق الكلية في Resend؛
+ * بعد التوثيق يُضبط RESEND_FROM_EMAIL على عنوان من نطاق الكلية.
+ */
+const DEFAULT_FROM_EMAIL = "onboarding@resend.dev";
 
 export type NotificationEventType =
   | "new_request"
@@ -116,19 +126,68 @@ function buildPayload(
 }
 
 /**
- * الدالة العامة: ترسل POST مستقلًا لكل مستلم.
+ * تطبيع قيمة حقل إلى سطر واحد.
+ *
+ * حرج لعقد التحليل: قيمة message تُبنى من نص يكتبه المستخدم (ردّ المتدرب،
+ * سبب الرفض) وقد يحوي سطورًا متعددة. سطر جديد واحد داخل القيمة يجعل
+ * Power Automate يقرأ بقية النص كحقل مستقل ويُفسد التحليل كله.
+ */
+function singleLine(value: string): string {
+  return String(value).replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+/** ترتيب حقول المتن — ثابت في كل رسالة بلا استثناء ليبقى التحليل متسقًا */
+const BODY_FIELDS: (keyof NotificationPayload)[] = [
+  "eventType",
+  "requestId",
+  "studentName",
+  "trainingNumber",
+  "specialization",
+  "requestType",
+  "recipientEmail",
+  "recipientRole",
+  "message",
+  "requestUrl",
+];
+
+/**
+ * بناء الإيميل الحاوية: عنوان ببادئة ثابتة، ومتن نصي عادي بصيغة
+ * «مفتاح: قيمة» سطرًا لكل حقل — بلا تحية ولا توقيع ولا أي سطر إضافي.
+ *
+ * مُصدَّرة عمدًا ليُختبر شكلها اختبارًا مباشرًا.
+ */
+export function buildContainerEmail(payload: NotificationPayload): {
+  subject: string;
+  text: string;
+} {
+  return {
+    subject: `${SUBJECT_PREFIX} ${payload.eventType}`,
+    text: BODY_FIELDS.map((field) => `${field}: ${singleLine(payload[field])}`).join("\n"),
+  };
+}
+
+/**
+ * الدالة العامة: ترسل إيميل حاوية مستقلًا لكل مستلم إلى صندوق التتابع نفسه.
  * لا ترمي استثناءً في أي حال، ولا تعيد المحاولة (الإشعار ليس حرجًا).
  */
 export async function sendNotification(payloads: NotificationPayload[]): Promise<void> {
-  const webhookUrl = process.env.POWER_AUTOMATE_WEBHOOK_URL?.trim();
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const relayEmail = process.env.NOTIFICATIONS_RELAY_EMAIL?.trim();
 
-  if (!webhookUrl) {
+  if (!apiKey || !relayEmail) {
     // الميزة معطّلة بالكامل — تحذير واحد وخروج فوري بلا أي محاولة إرسال
-    console.warn(
-      "[notifications] POWER_AUTOMATE_WEBHOOK_URL غير مضبوط — تم تخطّي إرسال الإشعارات."
-    );
+    const missing = [
+      !apiKey ? "RESEND_API_KEY" : null,
+      !relayEmail ? "NOTIFICATIONS_RELAY_EMAIL" : null,
+    ]
+      .filter(Boolean)
+      .join(" و");
+    console.warn(`[notifications] ${missing} غير مضبوط — تم تخطّي إرسال الإشعارات.`);
     return;
   }
+
+  const fromEmail = process.env.RESEND_FROM_EMAIL?.trim() || DEFAULT_FROM_EMAIL;
+  const resend = new Resend(apiKey);
 
   for (const payload of payloads) {
     if (!payload.recipientEmail) {
@@ -138,24 +197,29 @@ export async function sendNotification(payloads: NotificationPayload[]): Promise
       continue;
     }
 
+    const { subject, text } = buildContainerEmail(payload);
+
     // try/catch مستقل لكل مستلم: فشل واحد لا يمنع البقية
     try {
-      const response = await fetch(webhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      // الإيميل يُرسل دائمًا إلى صندوق التتابع، لا إلى المستلم النهائي؛
+      // المستلم الحقيقي مذكور داخل المتن ليستخرجه Power Automate.
+      const { error } = await resend.emails.send({
+        from: fromEmail,
+        to: relayEmail,
+        subject,
+        text,
       });
 
-      if (!response.ok) {
+      // Resend يعيد { data, error } ولا يرمي استثناءً عند رفض الخدمة
+      if (error) {
         console.error(
-          `[notifications] فشل الإرسال إلى ${payload.recipientEmail} (${payload.eventType}): HTTP ${response.status}`
+          `[notifications] رفض Resend الرسالة الخاصة بـ ${payload.recipientEmail} (${payload.eventType}): ${error.name} — ${error.message}`
         );
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       console.error(
-        `[notifications] خطأ أثناء الإرسال إلى ${payload.recipientEmail} (${payload.eventType}): ${reason}`
+        `[notifications] خطأ أثناء الإرسال الخاص بـ ${payload.recipientEmail} (${payload.eventType}): ${reason}`
       );
     }
   }
