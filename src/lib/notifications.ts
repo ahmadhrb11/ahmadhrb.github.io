@@ -1,31 +1,23 @@
 /**
- * طبقة الإشعارات البريدية — سلسلة تتابع (relay) من خطوتين.
+ * طبقة الإشعارات البريدية — إرسال مباشر عبر Gmail SMTP.
  *
- *   1. هذا الكود: يرسل عبر Resend إيميل «حاوية» نصيًّا واحدًا لكل مستلم إلى
- *      صندوق بريد مؤسسي واحد ثابت (NOTIFICATIONS_RELAY_EMAIL). هذا الإيميل
- *      ليس ما يراه المستلم النهائي — هو حاوية بيانات قابلة للتحليل الآلي.
- *   2. خارج الكود: Power Automate يراقب ذلك الصندوق، يحلّل أسطر
- *      «مفتاح: قيمة» من المتن، ثم يرسل الإيميل الرسمي للمستلم الحقيقي.
+ * عند وقوع حدث يُرسَل إيميل عربي منسّق (RTL) إلى المستلم الفعلي مباشرةً
+ * عبر حساب Gmail، بلا أي وسيط. بناء الإيميل في buildEmail، والإرسال في
+ * sendNotification.
  *
  * ثلاث ضمانات أساسية:
  *   1. لا ترمي هذه الطبقة استثناءً أبدًا — فشل الإشعار لا يفشل أي عملية.
  *   2. لكل مستلم إيميل مستقل بـ try/catch مستقل — فشل مستلم لا يمنع الباقي.
- *   3. بلا مفتاح Resend أو بلا صندوق تتابع تُعطَّل الميزة بتحذير واحد.
+ *   3. بلا GMAIL_USER أو GMAIL_APP_PASSWORD تُعطَّل الميزة بتحذير واحد،
+ *      بلا أي محاولة اتصال.
  */
 import type { Prisma } from "@prisma/client";
-import { Resend } from "resend";
+import nodemailer, { type Transporter } from "nodemailer";
 import { prisma } from "@/lib/prisma";
 import { TYPE_LABELS } from "@/lib/constants";
 
-/** بادئة ثابتة في عنوان الإيميل ليسهل التصفية عليها في Power Automate */
-const SUBJECT_PREFIX = "[TRAINEE-NOTIFY]";
-
-/**
- * عنوان المرسِل الافتراضي.
- * مؤقت على نطاق Resend التجريبي لحين توثيق نطاق الكلية في Resend؛
- * بعد التوثيق يُضبط RESEND_FROM_EMAIL على عنوان من نطاق الكلية.
- */
-const DEFAULT_FROM_EMAIL = "onboarding@resend.dev";
+/** اسم المرسِل الظاهر في صندوق المستلم */
+const DEFAULT_FROM_NAME = "نظام استفسارات المتدربين";
 
 export type NotificationEventType =
   | "new_request"
@@ -126,59 +118,195 @@ function buildPayload(
 }
 
 /**
- * تطبيع قيمة حقل إلى سطر واحد.
- *
- * حرج لعقد التحليل: قيمة message تُبنى من نص يكتبه المستخدم (ردّ المتدرب،
- * سبب الرفض) وقد يحوي سطورًا متعددة. سطر جديد واحد داخل القيمة يجعل
- * Power Automate يقرأ بقية النص كحقل مستقل ويُفسد التحليل كله.
+ * تهريب HTML — إلزامي لكل قيمة تدخل القالب.
+ * نص الرد وسبب الرفض يكتبهما المستخدم، فأي وسم فيهما يجب أن يظهر نصًّا لا كودًا.
  */
-function singleLine(value: string): string {
-  return String(value).replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
-/** ترتيب حقول المتن — ثابت في كل رسالة بلا استثناء ليبقى التحليل متسقًا */
-const BODY_FIELDS: (keyof NotificationPayload)[] = [
-  "eventType",
-  "requestId",
-  "studentName",
-  "trainingNumber",
-  "specialization",
-  "requestType",
-  "recipientEmail",
-  "recipientRole",
-  "message",
-  "requestUrl",
-];
+/**
+ * موضوع ثابت لكل حدث — لا يحوي أي نص يكتبه المستخدم،
+ * فلا يمكن حقن شيء في ترويسة الموضوع.
+ */
+function subjectFor(payload: NotificationPayload): string {
+  switch (payload.eventType) {
+    case "new_request":
+      return "طلب جديد بانتظار مراجعتك";
+    case "approved":
+      return payload.recipientRole === "trainee"
+        ? "تمت الموافقة على طلبك"
+        : "طلب جديد محوّل إليك";
+    case "rejected":
+      return "تم رفض طلبك";
+    case "department_reply":
+      return "رد جديد على طلبك";
+    case "trainee_reply":
+      return "رد جديد من المتدرب على الطلب";
+    case "escalated":
+      return "تم تصعيد طلب متدرب";
+    case "closed":
+      return "تم إنهاء طلبك";
+  }
+}
+
+/** صفوف جدول التفاصيل — المتدرب يعرف بياناته، فتُعرض للإداريين فقط */
+function detailRows(payload: NotificationPayload): [string, string][] {
+  const rows: [string, string][] = [];
+  if (payload.recipientRole !== "trainee") {
+    rows.push(["اسم المتدرب", payload.studentName]);
+    rows.push(["الرقم التدريبي", payload.trainingNumber]);
+  }
+  rows.push(["التخصص", payload.specialization]);
+  rows.push(["نوع الطلب", payload.requestType]);
+  return rows;
+}
+
+/** نص الزر حسب الدور */
+function buttonLabel(payload: NotificationPayload): string {
+  return payload.recipientRole === "trainee" ? "متابعة طلبي" : "فتح الطلب";
+}
 
 /**
- * بناء الإيميل الحاوية: عنوان ببادئة ثابتة، ومتن نصي عادي بصيغة
- * «مفتاح: قيمة» سطرًا لكل حقل — بلا تحية ولا توقيع ولا أي سطر إضافي.
+ * بناء الإيميل: موضوع ثابت، ونسخة HTML عربية RTL، ونسخة نصية بنفس المحتوى.
  *
- * مُصدَّرة عمدًا ليُختبر شكلها اختبارًا مباشرًا.
+ * القالب بجداول وأنماط inline عمدًا — عملاء البريد (Outlook خصوصًا) لا
+ * يدعمون flex/grid ولا أوراق الأنماط الخارجية بشكل موثوق.
+ *
+ * مُصدَّرة ليُختبر شكلها دون إرسال.
  */
-export function buildContainerEmail(payload: NotificationPayload): {
+export function buildEmail(payload: NotificationPayload): {
   subject: string;
   text: string;
+  html: string;
 } {
-  return {
-    subject: `${SUBJECT_PREFIX} ${payload.eventType}`,
-    text: BODY_FIELDS.map((field) => `${field}: ${singleLine(payload[field])}`).join("\n"),
-  };
+  const subject = subjectFor(payload);
+  const rows = detailRows(payload);
+  const label = buttonLabel(payload);
+
+  // كل قيمة تمر عبر escapeHtml بلا استثناء، بما فيها الرابط
+  const safeMessage = escapeHtml(payload.message);
+  const safeUrl = escapeHtml(payload.requestUrl);
+  const safeSubject = escapeHtml(subject);
+
+  const rowsHtml = rows
+    .map(
+      ([key, value]) => `
+            <tr>
+              <td style="padding:10px 16px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:13px;white-space:nowrap;">${escapeHtml(key)}</td>
+              <td style="padding:10px 16px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-size:14px;font-weight:600;">${escapeHtml(value)}</td>
+            </tr>`
+    )
+    .join("");
+
+  const html = `<!doctype html>
+<html lang="ar" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${safeSubject}</title></head>
+<body style="margin:0;padding:0;background-color:#f1f5f9;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f1f5f9;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" dir="rtl" style="max-width:560px;background-color:#ffffff;border-radius:12px;overflow:hidden;font-family:'Segoe UI',Tahoma,Arial,sans-serif;text-align:right;">
+
+          <tr>
+            <td style="background-color:#0369a1;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;">
+              ${escapeHtml(DEFAULT_FROM_NAME)}
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:24px 24px 8px 24px;">
+              <h1 style="margin:0;font-size:19px;font-weight:700;color:#0f172a;">${safeSubject}</h1>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0 24px 20px 24px;">
+              <p style="margin:0;font-size:15px;line-height:1.9;color:#334155;">${safeMessage}</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0 24px 20px 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e2e8f0;border-radius:8px;">
+                ${rowsHtml}
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0 24px 28px 24px;">
+              <a href="${safeUrl}" style="display:inline-block;background-color:#0369a1;color:#ffffff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:15px;font-weight:700;">${escapeHtml(label)}</a>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background-color:#f8fafc;padding:16px 24px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:12px;line-height:1.8;">
+              رسالة آلية من نظام استفسارات المتدربين — يرجى عدم الرد عليها.
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  const text = [
+    subject,
+    "",
+    payload.message,
+    "",
+    ...rows.map(([key, value]) => `${key}: ${value}`),
+    "",
+    `${label}: ${payload.requestUrl}`,
+    "",
+    "رسالة آلية من نظام استفسارات المتدربين — يرجى عدم الرد عليها.",
+  ].join("\n");
+
+  return { subject, text, html };
+}
+
+/** ناقل Nodemailer يُعاد استخدامه داخل نفس الـ instance */
+let cachedTransporter: Transporter | null = null;
+
+function getTransporter(user: string, pass: string): Transporter {
+  if (!cachedTransporter) {
+    cachedTransporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user, pass },
+      // مهل قصيرة حتى لا يعلّق Gmail البطيء الطلب على Vercel
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
+    });
+  }
+  return cachedTransporter;
 }
 
 /**
- * الدالة العامة: ترسل إيميل حاوية مستقلًا لكل مستلم إلى صندوق التتابع نفسه.
+ * الدالة العامة: ترسل إيميلًا مستقلًا لكل مستلم مباشرةً إلى بريده.
  * لا ترمي استثناءً في أي حال، ولا تعيد المحاولة (الإشعار ليس حرجًا).
  */
 export async function sendNotification(payloads: NotificationPayload[]): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY?.trim();
-  const relayEmail = process.env.NOTIFICATIONS_RELAY_EMAIL?.trim();
+  if (payloads.length === 0) return;
 
-  if (!apiKey || !relayEmail) {
-    // الميزة معطّلة بالكامل — تحذير واحد وخروج فوري بلا أي محاولة إرسال
+  const gmailUser = process.env.GMAIL_USER?.trim();
+  // Google تعرض كلمة مرور التطبيق مجزّأة بمسافات — تُزال كلها قبل الاستخدام
+  const gmailPassword = process.env.GMAIL_APP_PASSWORD?.replace(/\s+/g, "");
+
+  if (!gmailUser || !gmailPassword) {
     const missing = [
-      !apiKey ? "RESEND_API_KEY" : null,
-      !relayEmail ? "NOTIFICATIONS_RELAY_EMAIL" : null,
+      !gmailUser ? "GMAIL_USER" : null,
+      !gmailPassword ? "GMAIL_APP_PASSWORD" : null,
     ]
       .filter(Boolean)
       .join(" و");
@@ -186,8 +314,8 @@ export async function sendNotification(payloads: NotificationPayload[]): Promise
     return;
   }
 
-  const fromEmail = process.env.RESEND_FROM_EMAIL?.trim() || DEFAULT_FROM_EMAIL;
-  const resend = new Resend(apiKey);
+  const fromName = process.env.MAIL_FROM_NAME?.trim() || DEFAULT_FROM_NAME;
+  const transporter = getTransporter(gmailUser, gmailPassword);
 
   for (const payload of payloads) {
     if (!payload.recipientEmail) {
@@ -197,29 +325,21 @@ export async function sendNotification(payloads: NotificationPayload[]): Promise
       continue;
     }
 
-    const { subject, text } = buildContainerEmail(payload);
+    const { subject, text, html } = buildEmail(payload);
 
     // try/catch مستقل لكل مستلم: فشل واحد لا يمنع البقية
     try {
-      // الإيميل يُرسل دائمًا إلى صندوق التتابع، لا إلى المستلم النهائي؛
-      // المستلم الحقيقي مذكور داخل المتن ليستخرجه Power Automate.
-      const { error } = await resend.emails.send({
-        from: fromEmail,
-        to: relayEmail,
+      await transporter.sendMail({
+        from: { name: fromName, address: gmailUser },
+        to: payload.recipientEmail,
         subject,
         text,
+        html,
       });
-
-      // Resend يعيد { data, error } ولا يرمي استثناءً عند رفض الخدمة
-      if (error) {
-        console.error(
-          `[notifications] رفض Resend الرسالة الخاصة بـ ${payload.recipientEmail} (${payload.eventType}): ${error.name} — ${error.message}`
-        );
-      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       console.error(
-        `[notifications] خطأ أثناء الإرسال الخاص بـ ${payload.recipientEmail} (${payload.eventType}): ${reason}`
+        `[notifications] فشل إرسال ${payload.eventType} إلى ${payload.recipientEmail}: ${reason}`
       );
     }
   }

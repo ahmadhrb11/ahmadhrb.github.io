@@ -23,6 +23,9 @@ next-env.d.ts
 # النشر
 /.vercel
 
+# معاينة الإشعار البريدي (تُولَّد بـ npm run notify:test -- --dry)
+notification-preview.html
+
 # متفرقات
 .DS_Store
 *.pem
