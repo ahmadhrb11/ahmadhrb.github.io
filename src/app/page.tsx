@@ -74,6 +74,13 @@ export default function HomePage() {
             </li>
           </ol>
         </section>
+
+        <p className="mt-10 text-center text-sm text-slate-500">
+          مواد تعليمية:{" "}
+          <Link href="/pid" className="font-bold text-sky-600 hover:underline">
+            درس تفاعلي عن المتحكم PID
+          </Link>
+        </p>
       </main>
     </>
   );
