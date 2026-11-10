@@ -57,5 +57,8 @@ export const ROLE_HOME: Record<Role, string> = {
 /** الحالات التي تسمح بإضافة رسائل جديدة على الطلب */
 export const OPEN_CONVERSATION_STATUSES: RequestStatus[] = ["IN_PROGRESS", "ESCALATED"];
 
-/** عدد الأيام قبل التصعيد التلقائي (قابل للضبط عبر متغيّر بيئة) */
+/** عدد الأيام قبل التصعيد التلقائي حين يكون الدور على المسؤول (قابل للضبط عبر متغيّر بيئة) */
 export const ESCALATION_DAYS = Number(process.env.ESCALATION_DAYS ?? 3) || 3;
+
+/** عدد الأيام قبل الإغلاق التلقائي حين يكون الدور على المتدرب (قابل للضبط عبر متغيّر بيئة) */
+export const AUTO_CLOSE_DAYS = Number(process.env.AUTO_CLOSE_DAYS ?? 3) || 3;

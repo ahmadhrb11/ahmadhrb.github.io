@@ -8,7 +8,7 @@ import { days, duration, pct } from "@/components/charts/format";
 import { SERIES_1, STATUS_COLORS } from "@/components/charts/tokens";
 import { PeriodFilter } from "@/app/admin/dashboard/PeriodFilter";
 import { getDashboardData, isPeriod, type PeriodKey } from "@/lib/analytics";
-import { ESCALATION_DAYS, STATUS_LABELS, TYPE_LABELS } from "@/lib/constants";
+import { AUTO_CLOSE_DAYS, ESCALATION_DAYS, STATUS_LABELS, TYPE_LABELS } from "@/lib/constants";
 import { shortId } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -93,47 +93,19 @@ export default async function AdminDashboardPage({
         </div>
       </section>
 
-      {/* ــــ تنبيه عملي: طلبات على وشك التصعيد التلقائي ــــ */}
-      {data.atRisk.length > 0 ? (
-        <section className="rounded-xl border border-amber-300 bg-amber-50 p-5">
-          <h2 className="flex items-center gap-2 text-base font-bold text-amber-900">
-            <span aria-hidden>⚠</span>
-            {data.atRisk.length} طلب على وشك التصعيد التلقائي
-          </h2>
-          <p className="mt-1 text-sm text-amber-800">
-            لم يردّ رئيس القسم عليها منذ قرابة {ESCALATION_DAYS} أيام. (لقطة لحظية — لا تتأثر
-            بفلتر الفترة.)
-          </p>
-          <ul className="mt-3 flex flex-col gap-2">
-            {data.atRisk.map((row) => (
-              <li
-                key={row.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-4 py-2.5 text-sm"
-              >
-                <span className="font-semibold text-slate-800">
-                  {row.traineeName}
-                  <span className="mr-2 font-normal text-slate-500">
-                    {row.traineeNumber} · {row.specialty} · {row.headName ?? "—"}
-                  </span>
-                </span>
-                <span className="flex items-center gap-3">
-                  <span className="font-bold text-amber-800 [font-variant-numeric:tabular-nums]">
-                    {row.daysLeft <= 0
-                      ? "تجاوز المهلة"
-                      : `يتبقّى ${(row.daysLeft * 24).toFixed(0)} ساعة`}
-                  </span>
-                  <Link
-                    href={`/admin/requests/${row.id}`}
-                    className="font-semibold text-sky-600 hover:underline"
-                  >
-                    عرض
-                  </Link>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      {/* ــــ تنبيهان عمليان: اقتراب التصعيد واقتراب الإغلاق التلقائي ــــ */}
+      <DeadlineAlert
+        rows={data.atRisk}
+        tone="amber"
+        title="طلب على وشك التصعيد التلقائي"
+        description={`الدور فيها على رئيس القسم ولم يردّ منذ قرابة ${ESCALATION_DAYS} أيام.`}
+      />
+      <DeadlineAlert
+        rows={data.atRiskOfClosure}
+        tone="rose"
+        title="طلب على وشك الإغلاق التلقائي"
+        description={`الدور فيها على المتدرب ولم يردّ منذ قرابة ${AUTO_CLOSE_DAYS} أيام.`}
+      />
 
       {/* ــــ الاتجاه الزمني ــــ */}
       <ChartCard
@@ -290,5 +262,60 @@ export default async function AdminDashboardPage({
         )}
       </section>
     </div>
+  );
+}
+
+/** تنبيه مهلة وشيكة — يُستخدم للتصعيد وللإغلاق التلقائي بنفس الشكل */
+function DeadlineAlert({
+  rows,
+  tone,
+  title,
+  description,
+}: {
+  rows: { id: string; traineeName: string; traineeNumber: string; specialty: string; headName: string | null; daysLeft: number }[];
+  tone: "amber" | "rose";
+  title: string;
+  description: string;
+}) {
+  if (rows.length === 0) return null;
+
+  const styles = {
+    amber: { box: "border-amber-300 bg-amber-50", head: "text-amber-900", body: "text-amber-800", value: "text-amber-800" },
+    rose: { box: "border-rose-300 bg-rose-50", head: "text-rose-900", body: "text-rose-800", value: "text-rose-800" },
+  }[tone];
+
+  return (
+    <section className={`rounded-xl border p-5 ${styles.box}`}>
+      <h2 className={`flex items-center gap-2 text-base font-bold ${styles.head}`}>
+        <span aria-hidden>⚠</span>
+        {rows.length} {title}
+      </h2>
+      <p className={`mt-1 text-sm ${styles.body}`}>
+        {description} (لقطة لحظية — لا تتأثر بفلتر الفترة.)
+      </p>
+      <ul className="mt-3 flex flex-col gap-2">
+        {rows.map((row) => (
+          <li
+            key={row.id}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-4 py-2.5 text-sm"
+          >
+            <span className="font-semibold text-slate-800">
+              {row.traineeName}
+              <span className="mr-2 font-normal text-slate-500">
+                {row.traineeNumber} · {row.specialty} · {row.headName ?? "—"}
+              </span>
+            </span>
+            <span className="flex items-center gap-3">
+              <span className={`font-bold [font-variant-numeric:tabular-nums] ${styles.value}`}>
+                {row.daysLeft <= 0 ? "تجاوز المهلة" : `يتبقّى ${(row.daysLeft * 24).toFixed(0)} ساعة`}
+              </span>
+              <Link href={`/admin/requests/${row.id}`} className="font-semibold text-sky-600 hover:underline">
+                عرض
+              </Link>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

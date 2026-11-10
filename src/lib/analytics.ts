@@ -7,7 +7,7 @@
  */
 import type { Prisma, RequestStatus, RequestType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { ESCALATION_DAYS } from "@/lib/constants";
+import { AUTO_CLOSE_DAYS, ESCALATION_DAYS } from "@/lib/constants";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -98,6 +98,8 @@ export type DashboardData = {
   trend: TrendPoint[];
   /** لقطة لحظية — لا تتأثر بفلتر الفترة */
   atRisk: AtRiskRow[];
+  /** طلبات الدور فيها على المتدرب وتقترب من الإغلاق التلقائي */
+  atRiskOfClosure: AtRiskRow[];
   oldestOpen: AtRiskRow[];
   messagesTotal: number;
   avgMessagesPerConversation: number | null;
@@ -311,29 +313,83 @@ export async function getDashboardData(period: PeriodKey = "90"): Promise<Dashbo
       traineeNumber: true,
       status: true,
       createdAt: true,
-      lastHeadReplyAt: true,
+      approvedAt: true,
       specialty: { select: { name: true } },
       assignedHead: { select: { name: true } },
     },
   });
 
-  const atRisk: AtRiskRow[] = liveOpen
-    .filter((r) => r.status === "IN_PROGRESS" && r.lastHeadReplyAt)
-    .map((r) => {
-      const daysWaiting = (now - r.lastHeadReplyAt!.getTime()) / DAY_MS;
-      return {
-        id: r.id,
-        traineeName: r.traineeName,
-        traineeNumber: r.traineeNumber,
-        specialty: r.specialty.name,
-        headName: r.assignedHead?.name ?? null,
-        daysWaiting,
-        daysLeft: ESCALATION_DAYS - daysWaiting,
-      };
-    })
-    // تبقّى لها أقل من يوم واحد قبل التصعيد التلقائي
-    .filter((row) => row.daysLeft <= 1)
-    .sort((a, b) => a.daysLeft - b.daysLeft);
+  // من عليه الدور في كل طلب مفتوح — نفس قاعدة src/lib/escalation.ts تمامًا
+  const openIds = liveOpen.map((r) => r.id);
+  const [staffReplies, traineeReplies] = await Promise.all([
+    openIds.length
+      ? prisma.message.groupBy({
+          by: ["requestId"],
+          where: { requestId: { in: openIds }, senderRole: { in: ["DEPT_HEAD", "DEPUTY"] } },
+          _max: { createdAt: true },
+        })
+      : Promise.resolve([]),
+    openIds.length
+      ? prisma.message.groupBy({
+          by: ["requestId"],
+          where: { requestId: { in: openIds }, senderRole: "TRAINEE" },
+          _max: { createdAt: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const staffAtMap = new Map(
+    staffReplies.flatMap((r) => (r._max.createdAt ? [[r.requestId, r._max.createdAt]] as const : []))
+  );
+  const traineeAtMap = new Map(
+    traineeReplies.flatMap((r) => (r._max.createdAt ? [[r.requestId, r._max.createdAt]] as const : []))
+  );
+
+  const toRow = (
+    r: (typeof liveOpen)[number],
+    since: Date,
+    limitDays: number
+  ): AtRiskRow => {
+    const daysWaiting = (now - since.getTime()) / DAY_MS;
+    return {
+      id: r.id,
+      traineeName: r.traineeName,
+      traineeNumber: r.traineeNumber,
+      specialty: r.specialty.name,
+      headName: r.assignedHead?.name ?? null,
+      daysWaiting,
+      daysLeft: limitDays - daysWaiting,
+    };
+  };
+
+  const atRisk: AtRiskRow[] = [];
+  const atRiskOfClosure: AtRiskRow[] = [];
+
+  for (const r of liveOpen) {
+    if (r.status === "PENDING_REVIEW") continue; // لا مهلة على الأدمن
+
+    const staffAt = staffAtMap.get(r.id) ?? null;
+    const traineeAt = traineeAtMap.get(r.id) ?? null;
+    const staffHasLastWord = staffAt !== null && (traineeAt === null || staffAt > traineeAt);
+
+    if (staffHasLastWord) {
+      // الدور على المتدرب ⇐ يقترب من الإغلاق التلقائي
+      atRiskOfClosure.push(toRow(r, staffAt, AUTO_CLOSE_DAYS));
+      continue;
+    }
+
+    // الدور على المسؤول ⇐ يقترب من التصعيد، والتصعيد من «قيد المعالجة» فقط
+    if (r.status !== "IN_PROGRESS") continue;
+    const candidates = [traineeAt, r.approvedAt].filter((d): d is Date => d !== null);
+    if (candidates.length === 0) continue;
+    const since = candidates.reduce((latest, d) => (d > latest ? d : latest));
+    atRisk.push(toRow(r, since, ESCALATION_DAYS));
+  }
+
+  // تبقّى لها أقل من يوم واحد قبل انقضاء المهلة
+  const imminent = (rows: AtRiskRow[]) =>
+    rows.filter((row) => row.daysLeft <= 1).sort((a, b) => a.daysLeft - b.daysLeft);
+  const atRiskImminent = imminent(atRisk);
+  const atRiskOfClosureImminent = imminent(atRiskOfClosure);
 
   const oldestOpen: AtRiskRow[] = liveOpen
     .map((r) => ({
@@ -359,7 +415,8 @@ export async function getDashboardData(period: PeriodKey = "90"): Promise<Dashbo
     bySpecialty,
     byHead,
     trend,
-    atRisk,
+    atRisk: atRiskImminent,
+    atRiskOfClosure: atRiskOfClosureImminent,
     oldestOpen,
     messagesTotal,
     avgMessagesPerConversation:

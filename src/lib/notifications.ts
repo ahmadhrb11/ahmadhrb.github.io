@@ -515,14 +515,16 @@ export async function notifyEscalation(
 }
 
 /** إنهاء الأدمن للطلب يدويًا ⇐ المتدرب */
-export async function notifyRequestClosed(request: NotifiableRequest): Promise<void> {
+export async function notifyRequestClosed(
+  request: NotifiableRequest,
+  /** سبب الإغلاق التلقائي — يُترك فارغًا في الإغلاق اليدوي من الأدمن */
+  autoCloseReason?: string
+): Promise<void> {
+  const message = autoCloseReason
+    ? `تم إنهاء طلبك تلقائيًا: ${autoCloseReason}. لا يمكن إضافة ردود جديدة عليه، ويمكنك الاطلاع على المحادثة كاملة أو تقديم طلب جديد.`
+    : "تم إنهاء طلبك من قِبل مسؤول النظام. لا يمكن إضافة ردود جديدة عليه، ويمكنك الاطلاع على المحادثة كاملة.";
+
   await sendNotification([
-    buildPayload(
-      "closed",
-      request,
-      request.traineeEmail,
-      "trainee",
-      "تم إنهاء طلبك من قِبل مسؤول النظام. لا يمكن إضافة ردود جديدة عليه، ويمكنك الاطلاع على المحادثة كاملة."
-    ),
+    buildPayload("closed", request, request.traineeEmail, "trainee", message),
   ]);
 }
