@@ -52,7 +52,8 @@ export async function traineeMessageAction(
     },
   });
 
-  // ملاحظة: ردّ المتدرب لا يُحدّث lastHeadReplyAt — مؤقّت التصعيد يعتمد على رد رئيس القسم فقط.
+  // ملاحظة: ردّ المتدرب ينقل الدور إلى المسؤول فيُعيد تشغيل ساعة التصعيد.
+  // لا شيء يُكتب هنا لذلك: الساعة تُشتق من طابع الرسالة نفسها (src/lib/escalation.ts).
   after(async () => {
     const notifiable = await prisma.request.findUnique({
       where: { id: request.id },
@@ -121,7 +122,8 @@ export async function staffMessageAction(
         body: parsed.data.body,
       },
     }),
-    // إعادة ضبط مؤقّت التصعيد عند رد رئيس القسم فقط
+    // lastHeadReplyAt حقل معلوماتي فقط ولم يعد هو مؤقّت التصعيد — المهل تُحسب
+    // من طوابع الرسائل. يُكتب هنا ليبقى معناه (آخر رد من رئيس القسم) صحيحًا.
     ...(user.role === "DEPT_HEAD"
       ? [prisma.request.update({ where: { id: request.id }, data: { lastHeadReplyAt: now } })]
       : []),
