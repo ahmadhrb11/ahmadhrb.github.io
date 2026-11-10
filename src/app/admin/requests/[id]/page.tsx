@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AdminDeleteRequest } from "@/components/AdminDeleteRequest";
 import { AdminRequestActions } from "@/components/AdminRequestActions";
 import { Conversation } from "@/components/Conversation";
 import { MessageForm } from "@/components/MessageForm";
@@ -77,6 +78,11 @@ export default async function AdminRequestPage({ params }: { params: Promise<{ i
           <Card>
             <CardHeader title="سجل الحالة" subtitle="متى ولماذا تغيّرت حالة الطلب" />
             <RequestTimeline events={request.events} />
+          </Card>
+
+          <Card>
+            <CardHeader title="الحذف النهائي" subtitle="متاح لمسؤول النظام وحده — بلا رجعة" />
+            <AdminDeleteRequest requestId={request.id} traineeName={request.traineeName} />
           </Card>
         </div>
       </div>

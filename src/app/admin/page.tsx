@@ -3,7 +3,7 @@ import type { Prisma, RequestStatus, RequestType } from "@prisma/client";
 import { RequestFilters } from "@/components/RequestFilters";
 import { RequestsTable } from "@/components/RequestsTable";
 import { StatCard } from "@/components/StatCard";
-import { Card, CardHeader } from "@/components/ui";
+import { Alert, Card, CardHeader } from "@/components/ui";
 import { CountBadge } from "@/components/StatusBadge";
 import { prisma } from "@/lib/prisma";
 import { STATUS_LABELS, TYPE_LABELS } from "@/lib/constants";
@@ -11,7 +11,14 @@ import { STATUS_LABELS, TYPE_LABELS } from "@/lib/constants";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "لوحة مسؤول النظام" };
 
-type SearchParams = { status?: string; type?: string; specialtyId?: string; q?: string };
+type SearchParams = {
+  status?: string;
+  type?: string;
+  specialtyId?: string;
+  q?: string;
+  /** مرجع طلب حُذف نهائيًا — يصل من إعادة التوجيه بعد الحذف ليظهر شريط التأكيد */
+  deleted?: string;
+};
 
 function isStatus(value?: string): value is RequestStatus {
   return !!value && value in STATUS_LABELS;
@@ -55,6 +62,13 @@ export default async function AdminDashboardPage({
 
   return (
     <div className="flex flex-col gap-6">
+      {/* تأكيد الحذف النهائي — صفحة تفاصيل الطلب لم تبق موجودة لتعرضه */}
+      {filters.deleted ? (
+        <Alert tone="success">
+          تم حذف الطلب <span dir="ltr">#{filters.deleted}</span> نهائيًا مع كل رسائله وسجل حالته.
+        </Alert>
+      ) : null}
+
       {/* إشعار واضح بعدد الطلبات الجديدة التي تنتظر إجراء الأدمن */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="flex items-center gap-2 text-xl font-extrabold text-slate-900">

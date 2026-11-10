@@ -1,12 +1,13 @@
 "use server";
 
 /**
- * إجراءات دورة حياة الطلب: التقديم (عام) والموافقة/الرفض/الإنهاء (الأدمن).
+ * إجراءات دورة حياة الطلب: التقديم (عام) والموافقة/الرفض/الإنهاء/الحذف (الأدمن).
  */
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { shortId } from "@/lib/format";
 import { requireRole } from "@/lib/guards";
 import {
   notifiableRequestSelect,
@@ -287,4 +288,57 @@ export async function completeRequestAction(
   });
 
   return { ok: true, message: "تم إنهاء الطلب" };
+}
+
+/**
+ * حذف نهائي للطلب وكل آثاره — لمسؤول النظام وحده.
+ * لا يوجد قيد على الحالة: أي طلب في أي حالة من الحالات الخمس قابل للحذف،
+ * بخلاف الموافقة والرفض والإنهاء التي تشترط حالة معيّنة.
+ * عملية غير قابلة للتراجع: لا نسخة محفوظة ولا سجل حذف ولا إشعار لأي طرف.
+ */
+export async function deleteRequestAction(
+  _prev: ActionState,
+  formData: FormData
+): Promise<ActionState> {
+  const admin = await requireRole("ADMIN");
+  const requestId = String(formData.get("requestId") ?? "");
+
+  const request = await prisma.request.findUnique({
+    where: { id: requestId },
+    select: {
+      id: true,
+      traineeNumber: true,
+      status: true,
+      _count: { select: { messages: true, events: true } },
+    },
+  });
+  if (!request) return { ok: false, message: "الطلب غير موجود — ربما حُذف مسبقًا" };
+
+  // الحذف صريح وبترتيب الأبناء قبل الأب، ولا يعتمد على onDelete: Cascade المعلَن في
+  // الـ schema: الـ cascade في SQLite لا ينفَّذ إلا مع PRAGMA foreign_keys=ON على
+  // الاتصال نفسه، وهو غير مضمون عبر محوّل libSQL/Turso في الإنتاج. ولو كان مُطفأً
+  // لنجح حذف الطلب وبقيت رسائله وسجل حالته صفوفًا يتيمة — أي يبقى الأثر في المكان
+  // الوحيد الذي يهم. الجمل الثلاث تعطي النتيجة ذاتها في الحالتين.
+  await prisma.$transaction([
+    prisma.message.deleteMany({ where: { requestId } }),
+    prisma.requestEvent.deleteMany({ where: { requestId } }),
+    prisma.request.delete({ where: { id: requestId } }),
+  ]);
+
+  // الأثر الوحيد الباقي بعد الحذف: سطر في سجلات الخادم (Vercel Logs).
+  // لا يُحفظ شيء في قاعدة البيانات، ولا تُكتب هنا أي بيانات حسّاسة.
+  console.warn(
+    `[request.deleted] ref=${shortId(request.id)} traineeNumber=${request.traineeNumber} ` +
+      `status=${request.status} messages=${request._count.messages} events=${request._count.events} ` +
+      `by=${admin.email} at=${new Date().toISOString()}`
+  );
+
+  revalidatePath("/admin");
+  revalidatePath("/admin/dashboard");
+  revalidatePath("/department");
+  revalidatePath("/deputy");
+
+  // صفحة تفاصيل الطلب التي ضغط الأدمن الزر فيها لم تبق موجودة، فلا يصحّ إرجاع
+  // حالة نجاح إليها — نعيده إلى اللوحة مع مرجع الطلب المحذوف ليظهر شريط التأكيد.
+  redirect(`/admin?deleted=${shortId(request.id)}`);
 }
