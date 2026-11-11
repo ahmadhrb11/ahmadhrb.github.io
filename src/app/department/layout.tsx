@@ -5,7 +5,13 @@ import { requireRole } from "@/lib/guards";
 export default async function DepartmentLayout({ children }: { children: React.ReactNode }) {
   const user = await requireRole("DEPT_HEAD");
   return (
-    <DashboardShell user={user} links={[{ href: "/department", label: "طلباتي" }]}>
+    <DashboardShell
+      user={user}
+      links={[
+        { href: "/department", label: "طلباتي" },
+        { href: "/account", label: "حسابي" },
+      ]}
+    >
       {children}
     </DashboardShell>
   );

@@ -109,6 +109,25 @@ export const updateUserSchema = z.object({
   isActive: z.boolean(),
 });
 
+/**
+ * تغيير الموظف كلمة مرور حسابه بنفسه.
+ * لا يحمل معرّف المستخدم: الهوية تُؤخذ من الجلسة في الخادم ولا تصل من النموذج.
+ */
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, "أدخل كلمة المرور الحالية"),
+    newPassword: z.string().min(6, "كلمة المرور يجب أن تكون 6 أحرف على الأقل").max(72),
+    confirmPassword: z.string().min(1, "أعد كتابة كلمة المرور الجديدة"),
+  })
+  .refine((data) => data.newPassword === data.confirmPassword, {
+    message: "كلمتا المرور غير متطابقتين",
+    path: ["confirmPassword"],
+  })
+  .refine((data) => data.newPassword !== data.currentPassword, {
+    message: "اختر كلمة مرور مختلفة عن الحالية",
+    path: ["newPassword"],
+  });
+
 /** نتيجة موحّدة تُعيدها كل الـ Server Actions إلى النماذج */
 export type ActionState = {
   ok: boolean;

@@ -5,7 +5,13 @@ import { requireRole } from "@/lib/guards";
 export default async function DeputyLayout({ children }: { children: React.ReactNode }) {
   const user = await requireRole("DEPUTY");
   return (
-    <DashboardShell user={user} links={[{ href: "/deputy", label: "الطلبات المُصعّدة" }]}>
+    <DashboardShell
+      user={user}
+      links={[
+        { href: "/deputy", label: "الطلبات المُصعّدة" },
+        { href: "/account", label: "حسابي" },
+      ]}
+    >
       {children}
     </DashboardShell>
   );
